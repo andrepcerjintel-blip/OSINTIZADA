@@ -1,0 +1,34 @@
+# Secrets — nunca versionar
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Dados de investigação / evidências locais
+data/
+cases/
+evidence_store/
+exports/
+*.sqlite
+*.db
+
+# Editores / SO
+.idea/
+.vscode/
+.DS_Store

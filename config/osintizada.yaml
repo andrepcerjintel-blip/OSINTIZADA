@@ -1,0 +1,31 @@
+# Configuração central do OSINTIZADA.
+# NUNCA coloque API keys aqui: secrets vêm de variáveis de ambiente (.env fora do Git).
+# Valores omitidos usam os padrões de osintizada/config.py.
+
+search:
+  max_depth: 2
+  max_queries: 100
+  max_entities: 500
+  max_results_per_provider: 50
+  concurrency: 8
+  provider_timeout_seconds: 30
+  depth_priority_penalty: 10   # prioridade subtraída por nível de pivô
+
+query_budget:
+  max_cost_per_search: 200
+  costs:
+    local: 0
+    web: 1
+    api: 2
+    browser: 3
+    tor: 4
+    paid: 5
+
+tor:
+  mode: TOR_DISABLED            # TOR_DISABLED | TOR_PASSIVE | TOR_DEEP_SEARCH
+  socks_proxy: socks5h://127.0.0.1:9050
+
+# Overrides por provider (nome = BaseProvider.name)
+providers:
+  local.identifier_analysis:
+    enabled: true

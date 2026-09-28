@@ -1,0 +1,1 @@
+"""Providers locais (sem rede)."""
