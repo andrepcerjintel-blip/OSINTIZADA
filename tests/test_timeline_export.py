@@ -2,7 +2,7 @@ import csv
 import io
 import json
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -108,3 +108,42 @@ async def test_export_to_file(case):
     db, settings, case_id = case
     info = ExportService(db, settings).export_to_file(case_id, "html", "job123")
     assert info["size_bytes"] > 0 and info["path"].endswith("job123.html") and len(info["sha256"]) == 64
+
+
+def _evidence(db, case_id, etype, value, provider, *, observed=None, raw=None, n=0):
+    from osintizada.core.enums import EntityType
+    from osintizada.repositories import EntityRepository, EvidenceRepository
+
+    with db.session() as s:
+        ent, _ = EntityRepository(s).upsert(case_id, EntityType(etype), value)
+        EvidenceRepository(s).add(
+            case_id=case_id, entity_id=ent.id, provider=provider, source_type="API", query=value,
+            normalized_value=value, confidence=0.8, collected_at=datetime(2026, 9, 28, tzinfo=timezone.utc),
+            content_hash=f"h{n}", fingerprint=f"fp-{n}", raw_data=raw or {}, observed_at=observed)
+
+
+def test_published_at_is_distinct_from_observed_and_collected(tmp_path):
+    service, db, _ = build_service(Settings())
+    case_id = service.create_case("t", None)
+    # Página com data de publicação informada pela fonte.
+    _evidence(db, case_id, "URL", "https://news.example/a", "search.brave",
+              observed=datetime(2019, 5, 1, tzinfo=timezone.utc),
+              raw={"published_at": "2019-05-01T00:00:00+00:00"}, n=1)
+    # Página de busca SEM data: não vira DOCUMENT_PUBLISHED nem usa a data de coleta.
+    _evidence(db, case_id, "URL", "https://news.example/b", "search.brave", n=2)
+    # Provider declara o tipo do fato (ex.: coleta futura de mensagens/commits).
+    _evidence(db, case_id, "URL", "https://t.me/canal/10", "social.telegram",
+              observed=datetime(2021, 3, 2, tzinfo=timezone.utc), raw={"event_type": "MESSAGE_POSTED"}, n=3)
+    _evidence(db, case_id, "URL", "https://git.example/c/1", "code.git",
+              observed=datetime(2022, 1, 1, tzinfo=timezone.utc), raw={"event_type": "commit; drop"}, n=4)
+    _evidence(db, case_id, "LOCATION", "Rua Exemplo 1, São Paulo", "search.brave",
+              observed=datetime(2020, 1, 1, tzinfo=timezone.utc), n=5)
+    events = {e.entity_value: e for e in TimelineService(db).build(case_id)}
+    pub = events["https://news.example/a"]
+    assert pub.event_type == "DOCUMENT_PUBLISHED" and pub.time_basis == "published_at"
+    assert pub.event_time.startswith("2019-05-01") and pub.collected_at.startswith("2026")
+    assert "https://news.example/b" not in events
+    assert events["https://t.me/canal/10"].event_type == "MESSAGE_POSTED"
+    assert events["https://git.example/c/1"].event_type == "ENTITY_OBSERVED"  # dica inválida é ignorada
+    assert any(e.event_type == "ADDRESS_OBSERVED" for e in events.values())
+    assert [e.event_time for e in events.values()] == sorted(e.event_time for e in events.values())

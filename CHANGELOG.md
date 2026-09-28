@@ -2,6 +2,22 @@
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [0.4.1] — 2026-09-28 — Revisão da fase 4
+
+### Adicionado
+- **Rate limit compartilhado via Redis** (`infrastructure/redis_rate_limit.py`): token bucket atômico (Lua,
+  relógio do próprio Redis) por provider, comum a API e a todos os workers; cooldown de HTTP 429 também
+  compartilhado. Sem Redis, ou com `resilience.shared_rate_limit: false`, o limite é por processo. Redis
+  indisponível no meio da execução degrada para o limite local (aviso + métrica `rate_limit_redis_error`).
+- `REDIS_CACHE_URL` (opcional): cache em Redis/DB separado (política LRU), enquanto fila e locks ficam num
+  Redis `noeviction`.
+- Timeline: `published_at` informado pela fonte (ex.: `page_age` da Brave, `article:published_time` do
+  Google) é gravado na evidência e usado como `time_basis=published_at`; página sem data não vira
+  `DOCUMENT_PUBLISHED`. Providers podem declarar o tipo do fato (`raw.event_type`, ex.: `MESSAGE_POSTED`,
+  `COMMIT_CREATED`); `LOCATION` gera `ADDRESS_OBSERVED`.
+- SSRF: `.onion` recusado no cliente HTTP comum (exige o cliente Tor dedicado).
+- `infrastructure.redis_cache.build_runtime()`: único ponto que monta cache + rate limiter para API e worker.
+
 ## [0.4.0] — 2026-09-28 — Fase 4: resiliência, jobs persistentes e segurança
 
 ### Adicionado

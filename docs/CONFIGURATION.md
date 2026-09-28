@@ -34,6 +34,7 @@ resilience:
   default_cooldown_seconds: 60  # pausa após HTTP 429 sem Retry-After
   default_cache_ttl_seconds: 3600
   max_response_bytes: 5242880   # respostas maiores são recusadas
+  shared_rate_limit: true       # com Redis: rate limit e cooldown de 429 comuns a API + todos os workers
 
 network:
   user_agent: "OSINTIZADA/0.4 (+investigation research tool)"
@@ -149,6 +150,7 @@ correlation:
 | Variável | Uso |
 |---|---|
 | `DATABASE_URL` | conexão do banco |
+| `REDIS_CACHE_URL` | opcional: Redis/DB só para o cache (ex.: `maxmemory-policy allkeys-lru`); ausente → `REDIS_URL` |
 | `REDIS_URL` | Redis (fila, locks, cache, heartbeats). `rediss://:senha@host:6380/0` para TLS. Sem ela: jobs ficam `PENDING` (`QUEUE_UNAVAILABLE`) e `osintizada worker` se recusa a iniciar |
 | `OSINTIZADA_AUTO_MIGRATE` | `1` (padrão) aplica migrações na subida; `0` exige banco já migrado (falha com mensagem clara) |
 | `OSINTIZADA_TEST_DATABASE_URL` | só testes: roda `tests/test_jobs.py` contra PostgreSQL real (schema recriado) |

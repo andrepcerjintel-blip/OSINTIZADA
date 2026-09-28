@@ -10,7 +10,7 @@ tudo com auditoria.
 > **Princípio:** toda conclusão deve ser rastreável até a evidência que a originou.
 > **Código produz evidência. IA interpreta evidência.**
 
-## Estado atual (v0.4.0)
+## Estado atual (v0.4.1)
 
 | Componente | Estado |
 |---|---|
@@ -19,7 +19,8 @@ tudo com auditoria.
 | **Jobs persistentes**: fila RQ/Redis, worker separado, heartbeat, lock por Case, checkpoints, retomada, cancelamento, dead letter | ✅ |
 | Redis como coordenação efêmera: fila, locks, cache compartilhado, heartbeats, progresso, métricas (o banco é a fonte da verdade) | ✅ |
 | Resiliência: rate limit (antes da requisição), retry/backoff, circuit breaker, cache, concorrência global e por provider | ✅ |
-| SSRF com IP pinning (anti DNS rebinding), revalidação de redirect, política de portas e proxy | ✅ |
+| SSRF com IP pinning (anti DNS rebinding), revalidação de redirect, política de portas e proxy, `.onion` só via Tor | ✅ |
+| Rate limit por provider compartilhado entre processos (Redis) + cooldown de 429 compartilhado | ✅ |
 | **DNS**, **RDAP**, **Certificate Transparency**, **Wayback** | ✅ sem chave |
 | Search: Brave, Google Programmable Search | ✅ exigem chave (senão `NOT_CONFIGURED` + variáveis faltantes) |
 | Telegram (Telethon, sessão legítima; avatar com hash) | ✅ exige credenciais (senão `NOT_CONFIGURED`) |
@@ -102,7 +103,7 @@ CLI: `osintizada worker [--burst]`, `osintizada worker-status [--local] [--requi
 ## Testes
 
 ```bash
-pytest          # 400 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
+pytest          # 409 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
 # mesmos testes de jobs contra PostgreSQL real (banco descartável — o schema é recriado):
 OSINTIZADA_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/test_jobs.py
 ```

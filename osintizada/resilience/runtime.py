@@ -27,9 +27,11 @@ class ProviderRuntime:
         transport: httpx.AsyncBaseTransport | None = None,
         resolver: Callable[[str], object] | None = None,
         sleep: Callable[[float], object] = asyncio.sleep,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.cache = cache if cache is not None else InMemoryTTLCache(clock=clock)
-        self.rate_limiter = RateLimiter(clock=clock, sleep=sleep)
+        # Local (por processo) por padrão; a infraestrutura pode injetar um limitador compartilhado.
+        self.rate_limiter = rate_limiter if rate_limiter is not None else RateLimiter(clock=clock, sleep=sleep)
         self.clock = clock
         self.sleep = sleep
         # Injeções para testes/ambientes controlados.

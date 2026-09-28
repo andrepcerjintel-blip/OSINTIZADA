@@ -10,6 +10,7 @@ Tipos de evento extensíveis: ``register_event_rule(func)``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -27,6 +28,16 @@ def register_event_rule(rule: EventRule) -> EventRule:
     return rule
 
 
+_EVENT_NAME = re.compile(r"^[A-Z][A-Z_]{2,39}$")
+
+
+@register_event_rule
+def _provider_hint(ev: dict, ent: dict) -> str | None:
+    """O provider pode declarar o tipo do fato em ``raw["event_type"]`` (ex.: MESSAGE_POSTED, COMMIT_CREATED)."""
+    hint = (ev.get("raw") or {}).get("event_type")
+    return hint if isinstance(hint, str) and _EVENT_NAME.match(hint) else None
+
+
 @register_event_rule
 def _certificate(ev: dict, ent: dict) -> str | None:
     if ev["provider"] == "infra.crtsh" and ent["type"] in ("SUBDOMAIN", "DOMAIN"):
@@ -41,7 +52,7 @@ def _archived(ev: dict, ent: dict) -> str | None:
 
 @register_event_rule
 def _published(ev: dict, ent: dict) -> str | None:
-    return "DOCUMENT_PUBLISHED" if ev["provider"].startswith("search.") and ent["type"] == "URL" else None
+    return "DOCUMENT_PUBLISHED" if (ev.get("raw") or {}).get("published_at") and ent["type"] == "URL" else None
 
 
 @register_event_rule
@@ -49,6 +60,11 @@ def _account(ev: dict, ent: dict) -> str | None:
     if ent["type"] in ("SOCIAL_ACCOUNT", "TELEGRAM_USER", "TELEGRAM_CHANNEL", "TELEGRAM_GROUP", "USERNAME"):
         return "ACCOUNT_OBSERVED"
     return "AVATAR_OBSERVED" if ent["type"] == "IMAGE" else None
+
+
+@register_event_rule
+def _address(ev: dict, ent: dict) -> str | None:
+    return "ADDRESS_OBSERVED" if ent["type"] == "LOCATION" else None
 
 
 @register_event_rule
@@ -103,18 +119,19 @@ class TimelineService:
                 ent = entities.get(ev.entity_id)
                 if ent is None or (entity_type and ent.type != entity_type) or (provider and ev.provider != provider):
                     continue
+                raw = ev.raw_data or {}
+                published = _parse(raw.get("published_at")) if raw.get("published_at") else None
                 observed = _parse(ev.observed_at)
                 collected = _parse(ev.collected_at)
-                ev_dict = {"provider": ev.provider, "source_type": ev.source_type, "meta": ev.meta or {}}
+                ev_dict = {"provider": ev.provider, "source_type": ev.source_type, "meta": ev.meta or {}, "raw": raw}
                 ent_dict = {"type": ent.type}
-                if observed is None:
+                if published is None and observed is None:
                     if not include_collection_only:
-                        continue
+                        continue  # só há data de coleta: nunca apresentada como data do fato
                     kind, basis, when = "COLLECTED", "collected_at", collected
                 else:
                     kind = next((k for rule in _RULES if (k := rule(ev_dict, ent_dict))), "ENTITY_OBSERVED")
-                    basis = "published_at" if kind == "DOCUMENT_PUBLISHED" else "observed_at"
-                    when = observed
+                    basis, when = ("published_at", published) if published else ("observed_at", observed)
                 if (start and when < start) or (end and when > end):
                     continue
                 reason = (ev.meta or {}).get("relation_reason")

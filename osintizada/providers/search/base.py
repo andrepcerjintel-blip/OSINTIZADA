@@ -96,6 +96,8 @@ class SearchEngineProvider(APIProvider, ABC):
             mentioned = any(n in haystack.lower() for n in needles)
             raw = {"engine": hit.engine, "rank": hit.rank, "query": query, "title": hit.title,
                    "snippet": hit.snippet, "identifier_in_snippet": mentioned, "api_item": hit.raw}
+            if hit.published_at:  # data de publicação informada pela fonte (≠ data da coleta)
+                raw["published_at"] = hit.published_at.isoformat()
             results.append(ProviderResult(
                 type=EntityType.URL,
                 value=canonical_url(hit.url),

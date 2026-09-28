@@ -21,6 +21,12 @@ def redis_url(settings: Settings | None = None) -> str | None:
     return os.environ.get("REDIS_URL") or (settings or get_settings()).redis.url
 
 
+def redis_cache_url(settings: Settings | None = None) -> str | None:
+    """Redis do cache: ``REDIS_CACHE_URL`` se definido, senão o mesmo da fila."""
+    settings = settings or get_settings()
+    return os.environ.get("REDIS_CACHE_URL") or settings.redis.cache_url or redis_url(settings)
+
+
 def create_redis(url: str | None = None, settings: Settings | None = None, *, blocking: bool = False) -> redis.Redis:
     """``blocking=True``: conexão para escuta da fila (BLPOP longo) — sem timeout de leitura.
 

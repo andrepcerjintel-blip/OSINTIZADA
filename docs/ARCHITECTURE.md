@@ -103,11 +103,17 @@ cancelado/interrompido → `OPEN`.
 | Uso | Chave | Perda do Redis |
 |---|---|---|
 | Fila RQ | `rq:queue:osintizada` | reconciliador republica pelo banco |
-| Cache de providers | `osintizada:provider:<p>:<parser>:<sha256>` (JSON, TTL por provider) | só custo de nova consulta |
+| Cache de providers | `osintizada:provider:<p>:<parser>:<sha256>` (JSON, TTL por provider; opcionalmente em `REDIS_CACHE_URL`) | só custo de nova consulta |
+| Rate limit compartilhado | `osintizada:ratelimit:<provider>` (token bucket Lua), `osintizada:cooldown:<provider>` (429) | limite volta a ser por processo até o Redis voltar |
 | Lock do Case / reconciliador | `osintizada:lock:case:<id>`, `osintizada:lock:reconciler` | expira; claim no banco impede execução dupla |
 | Heartbeat de worker | `osintizada:worker:<id>` (TTL 3× intervalo) | `/health` mostra `OFFLINE` até o próximo heartbeat |
 | Progresso ao vivo / cancelamento | `osintizada:job:<id>:progress`, `:cancel` | banco tem progresso e `cancel_requested` |
 | Métricas agregadas | `osintizada:metrics` (hash) | contadores recomeçam |
+
+**Rate limit.** A cota é do provider, não do worker: o token bucket vive no Redis e é consumido por um
+script Lua atômico que usa `TIME` do Redis (processos em máquinas diferentes concordam). Um 429 recebido por
+qualquer processo pausa o provider para todos. Validado com dois processos reais a 60/min: 6 requisições
+saíram espaçadas de 1 s no total.
 
 Nenhuma evidência, entidade ou estado de job existe só no Redis. Não há pickle: o cache e a fila usam JSON.
 Com o Redis fora, a investigação continua sem cache, novos jobs ficam `PENDING` e a API avisa
@@ -266,7 +272,7 @@ osintizada/
 | 57 | Export | IMPLEMENTADO | JSON/CSV/HTML como job; GraphML pendente |
 | 58 | Histórico de buscas | IMPLEMENTADO | `search_executions` |
 | 62 | Observabilidade | IMPLEMENTADO | logs com case_id/job_id/provider, `/metrics`, `/health`, SSE |
-| 63 | Testes | IMPLEMENTADO | 400 testes, rede e Redis simulados; jobs também em PostgreSQL |
+| 63 | Testes | IMPLEMENTADO | 409 testes, rede e Redis simulados; jobs também em PostgreSQL |
 | 68–70 | RAW / multi-input / seeds | IMPLEMENTADO | — |
 | 76 | "Como chegamos aqui?" | IMPLEMENTADO | `GET /cases/{id}/entities/{entity_id}` |
 | 78 | Controle humano | IMPLEMENTADO | bloqueio de valores/providers, limites, cancelamento e retry via API |

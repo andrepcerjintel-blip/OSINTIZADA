@@ -44,6 +44,7 @@ resilience:
   max_rate_limit_wait_seconds: 15
   default_cache_ttl_seconds: 3600
   max_response_bytes: 5242880
+  shared_rate_limit: true         # com Redis: cota do provider compartilhada entre todos os processos
 
 network:
   user_agent: "OSINTIZADA/0.4 (+investigation research tool)"

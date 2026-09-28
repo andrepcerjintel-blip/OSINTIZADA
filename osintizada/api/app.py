@@ -74,10 +74,9 @@ def build_default_services() -> tuple[InvestigationService, JobService, Any]:
     from osintizada.bootstrap import validate_database
     from osintizada.config import get_settings
     from osintizada.infrastructure.queue import RQJobQueue
-    from osintizada.infrastructure.redis_cache import build_cache
+    from osintizada.infrastructure.redis_cache import build_runtime
     from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis
     from osintizada.orchestration.source_orchestrator import SourceOrchestrator
-    from osintizada.resilience import ProviderRuntime
 
     settings = get_settings()
     db = Database()
@@ -90,8 +89,7 @@ def build_default_services() -> tuple[InvestigationService, JobService, Any]:
         log.warning("REDIS_URL não configurada: jobs ficarão PENDING (QUEUE_UNAVAILABLE)")
     except Exception as exc:  # noqa: BLE001 - API sobe; health mostra Redis indisponível
         log.warning("Redis indisponível na inicialização", extra={"error": type(exc).__name__})
-    runtime = ProviderRuntime(cache=build_cache(settings, redis) if redis is not None or
-                              settings.cache.backend != "redis" else None)
+    runtime = build_runtime(settings, redis)
     orchestrator = SourceOrchestrator(settings=settings, runtime=runtime)
     service = InvestigationService(db, orchestrator, settings)
     queue = RQJobQueue(redis, settings.jobs.queue_name) if redis is not None else None

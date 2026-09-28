@@ -87,6 +87,7 @@ async def test_brave_parses_results_and_extracts_entities(settings, brave_env):
     assert first.raw["rank"] == 1 and first.raw["identifier_in_snippet"] is True
     assert first.confidence > pages[1].confidence
     assert first.observed_at.year == 2024
+    assert first.raw["published_at"].startswith("2024-05-01")  # data da fonte preservada p/ a timeline
 
     extracted = {(r.type, r.value) for r in resp.results if r.type != EntityType.URL}
     assert (EntityType.EMAIL, "fearless1999@gmail.com") in extracted

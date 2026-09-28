@@ -87,9 +87,27 @@ def build_cache(settings, client: redis.Redis | None = None) -> CacheBackend:
     from osintizada.resilience.cache import MemoryCacheBackend
 
     if settings.cache.backend == "redis":
-        if client is None:
-            from osintizada.infrastructure.redis_client import create_redis
+        from osintizada.infrastructure.redis_client import create_redis, redis_cache_url, redis_url
 
-            client = create_redis(settings=settings)
+        cache_url = redis_cache_url(settings)
+        if client is None or (cache_url and cache_url != redis_url(settings)):
+            client = create_redis(cache_url, settings=settings)  # REDIS_CACHE_URL separado, se houver
         return RedisCacheBackend(client, prefix=settings.cache.prefix)
     return MemoryCacheBackend(max_entries=settings.cache.max_memory_entries)
+
+
+def build_runtime(settings, client: redis.Redis | None = None):
+    """ProviderRuntime da aplicação: cache e rate limit escolhidos pela configuração.
+
+    O Core recebe só as interfaces (``CacheBackend``/``RateLimiter``); quem conhece Redis é esta camada.
+    """
+    from osintizada.infrastructure.redis_rate_limit import RedisRateLimiter
+    from osintizada.resilience import ProviderRuntime
+
+    cache = None
+    if client is not None or settings.cache.backend != "redis":
+        cache = build_cache(settings, client)
+    limiter = None
+    if client is not None and settings.resilience.shared_rate_limit:
+        limiter = RedisRateLimiter(client, prefix=settings.cache.prefix)
+    return ProviderRuntime(cache=cache, rate_limiter=limiter)

@@ -54,6 +54,7 @@ def client(transport, resolver, **kw):
         "file:///etc/passwd", "ftp://example.com/", "gopher://example.com/", "dict://example.com:11211/",
         "data:text/html,<script>", "javascript:alert(1)", "http://user:pass@example.com/",
         "http://example.com:6379/", "https://example.com:8443/",
+        "http://expyuzz4wqqyqhjn.onion/", "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/",
     ],
 )
 async def test_blocked_urls(url):

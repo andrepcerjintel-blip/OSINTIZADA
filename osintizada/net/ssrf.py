@@ -153,6 +153,9 @@ async def resolve_and_validate(
     except ValueError as exc:
         raise UnsafeURLError(f"Porta inválida em {url}") from exc
 
+    if host == "onion" or host.endswith(".onion"):
+        # Onion só pelo cliente Tor dedicado (TorProvider); o HTTP comum nunca vira rota para a rede Tor.
+        raise UnsafeURLError(f"Endereço .onion exige o cliente Tor dedicado: {host}")
     if host in {h.lower() for h in trusted_hosts}:
         return ValidatedTarget(url, scheme, host, port, (), None, True)
 

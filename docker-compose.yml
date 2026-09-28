@@ -7,6 +7,7 @@
 
 x-app-env: &app-env
   DATABASE_URL: postgresql+psycopg://osintizada:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/osintizada
+  REDIS_CACHE_URL: ${REDIS_CACHE_URL:-}   # opcional: cache em Redis separado (LRU)
   REDIS_URL: redis://:${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}@redis:6379/0
   OSINTIZADA_CONFIG: /app/config/osintizada.yaml
   OSINTIZADA_AUTO_MIGRATE: "1"

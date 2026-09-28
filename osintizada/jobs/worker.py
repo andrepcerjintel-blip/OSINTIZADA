@@ -73,9 +73,8 @@ class WorkerContext:
 
 def build_worker_context(settings: Settings | None = None, redis=None, db: Database | None = None,
                          orchestrator: SourceOrchestrator | None = None) -> WorkerContext:
-    from osintizada.infrastructure.redis_cache import build_cache
+    from osintizada.infrastructure.redis_cache import build_runtime
     from osintizada.infrastructure.redis_client import create_redis
-    from osintizada.resilience import ProviderRuntime
 
     settings = settings or get_settings()
     queue_redis = None
@@ -85,7 +84,7 @@ def build_worker_context(settings: Settings | None = None, redis=None, db: Datab
     db = db or Database()
     metrics.bind_redis(redis, settings.cache.prefix)
     if orchestrator is None:
-        runtime = ProviderRuntime(cache=build_cache(settings, redis))
+        runtime = build_runtime(settings, redis)
         orchestrator = SourceOrchestrator(settings=settings, runtime=runtime)
     queue = RQJobQueue(redis, settings.jobs.queue_name)
     investigation = InvestigationService(db, orchestrator, settings)

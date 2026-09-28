@@ -87,6 +87,9 @@ class ResilienceSettings(BaseModel):
     max_rate_limit_wait_seconds: float = 15  # espera maior que isso → não re-tenta, registra RATE_LIMITED
     default_cache_ttl_seconds: int = 3600
     max_response_bytes: int = 5 * 1024 * 1024
+    # Com Redis: rate limit e cooldown de 429 compartilhados entre todos os processos (cota é do provider,
+    # não do worker). Sem Redis, ou False: limite por processo.
+    shared_rate_limit: bool = True
 
 
 class DatabaseSettings(BaseModel):
@@ -108,6 +111,9 @@ class NetworkSettings(BaseModel):
 class RedisSettings(BaseModel):
     # REDIS_URL (env) tem precedência. Senha/TLS vão na URL (rediss://:senha@host:6380/0) — nunca no YAML.
     url: str | None = None
+    # REDIS_CACHE_URL (env, opcional): Redis/DB separado para o cache (ex.: maxmemory-policy allkeys-lru),
+    # enquanto fila e locks ficam num Redis com noeviction. Ausente → usa REDIS_URL.
+    cache_url: str | None = None
     socket_timeout_seconds: float = 5.0
 
 
