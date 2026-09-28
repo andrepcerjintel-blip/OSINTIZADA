@@ -36,6 +36,12 @@ def entity_fingerprint(entity_type: EntityType | str, value: str) -> str:
     return f"{EntityType(entity_type).value}:{value}"
 
 
+def social_account_value(platform: str, handle: str) -> str:
+    """Valor canônico de SOCIAL_ACCOUNT: ``plataforma:handle`` (handle em lowercase, exceto YouTube)."""
+    handle = handle.lstrip("@")
+    return f"{platform}:{handle if platform == 'youtube' else handle.lower()}"
+
+
 def entity_id_for(entity_type: EntityType | str, value: str) -> str:
     return hashlib.sha1(entity_fingerprint(entity_type, value).encode()).hexdigest()[:20]
 
@@ -80,6 +86,14 @@ class NormalizedIdentifier(_Model):
         from osintizada.core.enums import IDENTIFIER_TO_ENTITY
 
         return IDENTIFIER_TO_ENTITY[self.type]
+
+    @property
+    def entity_value(self) -> str:
+        """Valor usado na entidade (contas sociais ganham prefixo de plataforma)."""
+        from osintizada.core.enums import IDENTIFIER_PLATFORM
+
+        platform = IDENTIFIER_PLATFORM.get(self.type)
+        return social_account_value(platform, self.value) if platform else self.value
 
 
 # --- Entidades e relações ----------------------------------------------------

@@ -25,7 +25,28 @@ tor:
   mode: TOR_DISABLED            # TOR_DISABLED | TOR_PASSIVE | TOR_DEEP_SEARCH
   socks_proxy: socks5h://127.0.0.1:9050
 
+resilience:
+  max_retries: 2                  # só falhas transitórias (5xx, conexão); 429 nunca é re-tentado
+  backoff_base_seconds: 0.5
+  backoff_max_seconds: 8
+  breaker_failure_threshold: 5    # falhas consecutivas para abrir o circuito
+  breaker_recovery_seconds: 120
+  default_cooldown_seconds: 60    # pausa após 429 sem Retry-After
+  default_cache_ttl_seconds: 3600
+  max_response_bytes: 5242880
+
+network:
+  user_agent: "OSINTIZADA/0.2 (+investigation research tool)"
+
 # Overrides por provider (nome = BaseProvider.name)
 providers:
   local.identifier_analysis:
     enabled: true
+  search.brave:
+    enabled: true
+    rate_limit_per_minute: 60     # plano gratuito da Brave: 1 req/s (0 = sem limite local)
+    cache_ttl_seconds: 21600
+  search.google_cse:
+    enabled: true
+    rate_limit_per_minute: 60
+    cache_ttl_seconds: 21600

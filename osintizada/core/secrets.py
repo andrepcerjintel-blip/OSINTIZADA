@@ -14,6 +14,32 @@ import re
 _REDACTED = "****"
 
 
+def load_dotenv(path: str | os.PathLike[str] = ".env") -> list[str]:
+    """Carrega ``CHAVE=valor`` de um arquivo .env local para o ambiente.
+
+    Variáveis já definidas no ambiente têm precedência e nunca são sobrescritas.
+    Retorna apenas os NOMES carregados (nunca os valores).
+    """
+    loaded: list[str] = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return loaded
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 def get_secret(env_var: str) -> str | None:
     value = os.environ.get(env_var)
     return value.strip() if value and value.strip() else None

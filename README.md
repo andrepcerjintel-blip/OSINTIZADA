@@ -9,7 +9,7 @@ justificadas, seleciona fontes relevantes, coleta em paralelo, registra evidênc
 > **Princípio:** toda conclusão deve ser rastreável até a evidência que a originou.
 > **Código produz evidência. IA interpreta evidência.**
 
-## Estado atual — v0.1.0 (Fase 1: Core)
+## Estado atual — v0.2.0 (Fases 1 e 2a–2c)
 
 | Componente | Estado |
 |---|---|
@@ -19,8 +19,12 @@ justificadas, seleciona fontes relevantes, coleta em paralelo, registra evidênc
 | Query Planner + QueryBuilder (operadores, prioridade, custo, motivo) | ✅ |
 | Evidence Engine (hash, fingerprint, deduplicação) | ✅ |
 | Interface de providers + registry + healthcheck | ✅ |
-| SourceOrchestrator (depth 0, paralelo, orçamento, cancelamento) | ✅ |
-| Providers externos (search engines, Telegram, GitHub, …) | ⏳ Fase 2+ (aparecem como `NOT CONFIGURED`) |
+| SourceOrchestrator (depth 0, paralelo, consultas planejadas, orçamento, cancelamento) | ✅ |
+| Resiliência: rate limit, retry/backoff, circuit breaker, cache | ✅ |
+| Cliente HTTP seguro (SSRF, redirects validados, limite de tamanho) | ✅ |
+| Entity Extractors (13) | ✅ |
+| Search engines: Brave Search API, Google Programmable Search + RAW SEARCH | ✅ (exigem chave) |
+| Archives, Telegram, GitHub, Brasil, infraestrutura… | ⏳ ver roadmap |
 | Pivot / Correlation / Timeline / Graph / Persistência / API / UI | ⏳ ver [roadmap](docs/ARCHITECTURE.md#8-roadmap) |
 
 Nenhum resultado é simulado: fontes não integradas simplesmente não existem ou aparecem como `NOT CONFIGURED`.
@@ -47,11 +51,20 @@ osintizada plan 52998224725 --type cpf --mode deep_sweep --json
 # RAW SEARCH (registrada como consulta manual)
 osintizada raw '"usuario123" "proton.me"'
 
-# Executar providers disponíveis (Fase 1: apenas derivação local)
+# Investigação depth 0: consultas planejadas + mecanismos configurados + derivação local
+export BRAVE_SEARCH_API_KEY=...        # ou via .env
+osintizada run fearless1999 --mode quick
 osintizada run fearless1999@gmail.com https://github.com/torvalds
 
-# Status das integrações
-osintizada providers
+# RAW SEARCH executada (consulta enviada sem alteração e registrada)
+osintizada search '"usuario123" "proton.me"'
+
+# Extração de entidades de texto (offline)
+osintizada extract --file pagina.txt
+echo "contato: fulano@site.com.br, CPF 529.982.247-25" | osintizada extract
+
+# Status das integrações (+ healthcheck, pode consumir quota)
+osintizada providers --health
 ```
 
 Também disponível como `python -m osintizada ...`.

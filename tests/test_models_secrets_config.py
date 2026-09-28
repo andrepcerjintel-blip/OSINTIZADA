@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from osintizada.config import load_settings
 from osintizada.core.enums import EntityType, RelationType, SearchMode
 from osintizada.core.models import Entity, Relationship
-from osintizada.core.secrets import SecretRedactingFilter, mask_secret, sanitize
+from osintizada.core.secrets import SecretRedactingFilter, load_dotenv, mask_secret, sanitize
 
 
 def test_entity_id_is_deterministic():
@@ -57,3 +57,19 @@ def test_load_settings_from_yaml(tmp_path):
 def test_default_yaml_is_valid():
     s = load_settings()
     assert s.tor.mode == "TOR_DISABLED"
+
+
+def test_load_dotenv_does_not_override_environment(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text('# comentário\nOSZ_TEST_A="valor a"\nexport OSZ_TEST_B=b\nOSZ_TEST_C=do-arquivo\nlixo\n')
+    monkeypatch.delenv("OSZ_TEST_A", raising=False)
+    monkeypatch.delenv("OSZ_TEST_B", raising=False)
+    monkeypatch.setenv("OSZ_TEST_C", "do-ambiente")
+    loaded = load_dotenv(env)
+    import os
+    assert sorted(loaded) == ["OSZ_TEST_A", "OSZ_TEST_B"]
+    assert os.environ["OSZ_TEST_A"] == "valor a" and os.environ["OSZ_TEST_B"] == "b"
+    assert os.environ["OSZ_TEST_C"] == "do-ambiente"
+    monkeypatch.delenv("OSZ_TEST_A")
+    monkeypatch.delenv("OSZ_TEST_B")
+    assert load_dotenv(tmp_path / "nao-existe") == []

@@ -238,3 +238,16 @@ IDENTIFIER_TO_ENTITY: dict[IdentifierType, EntityType] = {
     IdentifierType.SHA512: EntityType.HASH,
     IdentifierType.KEYWORD: EntityType.KEYWORD,
 }
+
+
+# Plataforma associada a identificadores de redes sociais. Entidades
+# SOCIAL_ACCOUNT usam o valor canônico "<plataforma>:<handle>".
+IDENTIFIER_PLATFORM: dict[IdentifierType, str] = {
+    IdentifierType.TWITTER_USERNAME: "twitter",
+    IdentifierType.INSTAGRAM_USERNAME: "instagram",
+    IdentifierType.TIKTOK_USERNAME: "tiktok",
+    IdentifierType.GITHUB_USERNAME: "github",
+    IdentifierType.REDDIT_USERNAME: "reddit",
+    IdentifierType.YOUTUBE_CHANNEL: "youtube",
+    IdentifierType.FACEBOOK_PROFILE: "facebook",
+}

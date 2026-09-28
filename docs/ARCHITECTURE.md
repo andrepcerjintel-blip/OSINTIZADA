@@ -18,11 +18,11 @@ INPUT → IDENTIFIER ENGINE → QUERY PLANNER → SOURCE SELECTION → COLLECTOR
       → CONFIDENCE SCORING → TIMELINE → ENTITY GRAPH → INVESTIGATIVE REPORT
 ```
 
-Implementado na Fase 1 (em negrito):
-**INPUT → IDENTIFIER ENGINE → NORMALIZATION → QUERY PLANNER → SOURCE SELECTION → PROVIDERS → RAW EVIDENCE →
-ENTITIES (depth 0)**.
+Implementado até a v0.2 (em negrito):
+**INPUT → IDENTIFIER ENGINE → NORMALIZATION → QUERY PLANNER → SOURCE SELECTION → PROVIDERS (search engines,
+resiliência) → RAW EVIDENCE → PARSING → ENTITY EXTRACTION → ENTITIES (depth 0)**.
 
-## 3. Estrutura atual
+## 3. Estrutura atual (v0.2)
 
 ```
 osintizada/
@@ -39,14 +39,28 @@ osintizada/
     query_planner.py             QueryPlanner (templates, prioridade, custo, motivo, limites)
     evidence.py                  EvidenceEngine (hash, fingerprint, dedup, entidades)
     secrets.py                   env vars, mascaramento, sanitização de logs
+  resilience/
+    rate_limiter.py              token bucket por provider + cooldown após 429
+    circuit_breaker.py           CLOSED/OPEN/HALF_OPEN por provider
+    retry.py                     backoff exponencial com jitter (só falhas transitórias)
+    cache.py                     CacheBackend + InMemoryTTLCache + chave com versão do parser
+    runtime.py                   ProviderRuntime: estado compartilhado (cache, limites, métricas)
+  net/
+    ssrf.py                      validação de URL/IP (bloqueio de redes internas)
+    http_client.py               SafeHTTPClient (redirects validados, limite de tamanho, Retry-After)
+  extractors/                    13 extractors determinísticos + ExtractionPipeline
   providers/
-    base/provider.py             BaseProvider + Local/API/HTTP/Browser/Tor/Paid
+    base/provider.py             BaseProvider (pipeline de resiliência) + Local/API/HTTP/Browser/Tor/Paid
     base/registry.py             ProviderRegistry plugin-like
     local/identifier_analysis.py derivações estruturais (DERIVED)
+    search/base.py               SearchEngineProvider (operadores, hits → URL + extrações)
+    search/brave.py              Brave Search API
+    search/google_cse.py         Google Custom Search JSON API
   orchestration/
-    source_orchestrator.py       seleção de fontes + execução paralela + search log
+    search_manager.py            compatibilidade consulta×mecanismo, agregação entre mecanismos
+    source_orchestrator.py       seleção, consultas planejadas, limite/orçamento, execução paralela, RAW
 config/osintizada.yaml
-tests/                           111 testes (pytest)
+tests/                           189 testes (pytest), rede sempre simulada
 ```
 
 ## 4. Decisões de design
@@ -72,15 +86,15 @@ Legenda: **IMPLEMENTADO** · **PARCIAL** · **AUSENTE** · **PRECISA REFATORAÇ�
 |---|---|---|---|
 | 3 | Tipos de input / detecção multi-hipótese | IMPLEMENTADO | ~35 tipos; imagem/PDF (arquivos) ausentes |
 | 4 | Normalização | IMPLEMENTADO | eTLD+1 por heurística (sem PSL completa) |
-| 5 | SourceOrchestrator | PARCIAL | seleção + execução depth 0; sem presets |
+| 5 | SourceOrchestrator | PARCIAL | seleção, consultas planejadas, limite, orçamento; sem presets/pivôs |
 | 6–7 | Provider architecture / response | IMPLEMENTADO | 6 tipos base, resposta padronizada |
-| 8 | SearchManager (multi-engine) | AUSENTE | Fase 2 |
+| 8 | SearchManager (multi-engine) | PARCIAL | Brave + Google CSE; agregação/dedup; faltam Mojeek/Yandex |
 | 9 | QueryPlanner | IMPLEMENTADO | prioridade, custo, motivo, limites, dedup |
 | 10 | Query expansion | PARCIAL | `plan(depth=n)` pronto; gatilho vem com PivotEngine |
 | 11 | Deep Sweep | PARCIAL | perfil de modo configurado; recursão ausente |
-| 12 | Execução paralela | IMPLEMENTADO | semáforo global por modo; limite por provider reservado |
-| 13 | Rate limit / retry / backoff / circuit breaker | PARCIAL | status RATE_LIMITED + retry_after; política ausente |
-| 14 | Cache | AUSENTE | Fase 2 |
+| 12 | Execução paralela | IMPLEMENTADO | semáforo global por modo + concorrência por provider |
+| 13 | Rate limit / retry / backoff / circuit breaker | IMPLEMENTADO | token bucket, cooldown por Retry-After, backoff com jitter, breaker |
+| 14 | Cache | IMPLEMENTADO | em memória com TTL por fonte e versão do parser; Redis pendente |
 | 15 | Telegram | AUSENTE | Fase 3 (Telethon) |
 | 16–17 | Social / GitHub | PARCIAL | parsing de URLs sociais; coleta na Fase 3 |
 | 18–19 | Brazil OSINT / busca documental | PARCIAL | consultas documentais geradas; providers na Fase 4 |
@@ -89,7 +103,7 @@ Legenda: **IMPLEMENTADO** · **PARCIAL** · **AUSENTE** · **PRECISA REFATORAÇ�
 | 23 | Tor | PARCIAL | `TorProvider` isolado e desabilitado por padrão; worker ausente |
 | 24–25 | Image intelligence / pHash | AUSENTE | Fase 8 |
 | 26 | Credilink | PARCIAL | `PaidProvider` + secrets; integração Fase 9 |
-| 27 | Entity extractors | AUSENTE | Fase 2 (necessário para parsing de páginas) |
+| 27 | Entity extractors | PARCIAL | 13 extractors; Name/Location dependem da camada de IA |
 | 28 | PivotEngine | AUSENTE | Fase 6 |
 | 29–30 | Entidades / relações | IMPLEMENTADO | modelos e vocabulários completos |
 | 31–32 | Correlation / confidence score explicado | AUSENTE | Fase 6 |
@@ -103,18 +117,18 @@ Legenda: **IMPLEMENTADO** · **PARCIAL** · **AUSENTE** · **PRECISA REFATORAÇ�
 | 45–47 | Falsos positivos / contradições / duplicatas | PARCIAL | dedup de evidência pronto; contradições ausentes |
 | 48 | Database | AUSENTE | tudo em memória na Fase 1 |
 | 49 | Audit log | AUSENTE | search log de execução disponível |
-| 50 | Security | PARCIAL | `.gitignore`, secrets, sanitização; SSRF/upload ausentes (sem HTTP ainda) |
-| 51–52 | API key panel / healthcheck | PARCIAL | CLI `providers` + healthcheck mascarado |
+| 50 | Security | PARCIAL | secrets, sanitização, SSRF, limite de resposta; upload/MIME pendentes |
+| 51–52 | API key panel / healthcheck | PARCIAL | CLI `providers --health` (latência, quota, circuito) |
 | 53 | Configuração central | IMPLEMENTADO | |
 | 54 | Plugin-like | IMPLEMENTADO | decorator `@register_provider` |
 | 57 | Export | AUSENTE | JSON via `--json` apenas |
 | 58 | Search history | PARCIAL | `SearchRun.search_log` (não persistido) |
 | 59–60 | Query budget / source priority | IMPLEMENTADO | custos e tiers configuráveis |
 | 61 | Fail gracefully | IMPLEMENTADO | |
-| 62 | Observability | AUSENTE | |
-| 63 | Testes | IMPLEMENTADO | 111 testes |
+| 62 | Observability | PARCIAL | contadores no ProviderRuntime (chamadas, cache hits, retries, rate limits) |
+| 63 | Testes | IMPLEMENTADO | 189 testes |
 | 66–67 | Sem placeholders / ausência ≠ falha | IMPLEMENTADO | status distintos; `NOT CONFIGURED` |
-| 68 | RAW SEARCH | PARCIAL | planejamento/registro; execução com search engines na Fase 2 |
+| 68 | RAW SEARCH | IMPLEMENTADO | `osintizada search` envia a consulta sem alteração e registra |
 | 69–70 | Multi-input / seed entities | IMPLEMENTADO | correlação entre inputs na Fase 6 |
 | 71–73 | Notas manuais / classificação / derivados | PARCIAL | classificação e origem MANUAL/DERIVED prontas |
 | 77 | Search explanation (`reason`) | IMPLEMENTADO | |
@@ -129,8 +143,14 @@ Legenda: **IMPLEMENTADO** · **PARCIAL** · **AUSENTE** · **PRECISA REFATORAÇ�
   sozinha como base de correlação.
 - **Telefone internacional sem `+`**: tratado como BR quando 10–11 dígitos com DDD válido; caso contrário
   mantido como dígitos sem país (`metadata.note`).
-- **Limites por provider** (`rate_limit_per_minute`, `max_concurrency`, `cache_ttl_seconds`) já estão no
-  schema de configuração, mas só passam a valer na Fase 2.
+- **Integrações de busca validadas só com mocks**: Brave e Google CSE foram implementados sobre o formato
+  documentado das APIs e testados com respostas simuladas; a primeira execução com chave real deve ser
+  acompanhada (`osintizada providers --health`).
+- **Cache e estado em memória por processo**: perdidos ao reiniciar; Redis entra com a fila de jobs.
+- **SSRF e DNS rebinding**: a validação resolve o host antes da requisição; um atacante controlando DNS
+  poderia trocar o IP entre validação e conexão. Mitigação futura: conectar ao IP validado (pinning).
+- **Snippets são curtos**: entidades extraídas de snippets são co-ocorrências de baixa confiança; a coleta
+  da página completa (com SafeHTTPClient) é o próximo passo natural.
 
 ## 7. Arquitetura alvo
 
@@ -172,10 +192,10 @@ Legenda: **IMPLEMENTADO** · **PARCIAL** · **AUSENTE** · **PRECISA REFATORAÇ�
 | Prioridade | Etapa | Entregas |
 |---|---|---|
 | **P0** | Fase 1 — Core ✅ | identificadores, normalização, modelos, planner, evidência, providers, orquestrador |
-| **P0** | Fase 2a — Resiliência de providers | rate limiter por provider, retry/backoff, circuit breaker, cache com TTL por fonte e versão de parser, cliente HTTP com proteção SSRF |
-| **P0** | Fase 2b — Entity extractors | email, telefone, URL, domínio, IP, CPF/CNPJ, cripto, Telegram, usernames sociais |
-| **P0** | Fase 2c — SearchManager | Brave Search API, Bing, Mojeek/DuckDuckGo quando permitido; dedup entre motores; RAW SEARCH executável |
-| **P1** | Fase 2d — Archives | Wayback CDX, Common Crawl index (dados históricos marcados `is_historical`) |
+| **P0** | Fase 2a — Resiliência de providers ✅ | rate limiter, retry/backoff, circuit breaker, cache, SafeHTTPClient com SSRF |
+| **P0** | Fase 2b — Entity extractors ✅ | 13 extractors com salvaguardas contra falso positivo |
+| **P0** | Fase 2c — SearchManager ✅ | Brave, Google CSE, dedup entre mecanismos, RAW SEARCH executável |
+| **P0** | Fase 2d — Archives | Wayback CDX, Common Crawl index (dados históricos marcados `is_historical`) — sem chave |
 | **P1** | Persistência + Case | SQLAlchemy + PostgreSQL (SQLite em dev), Case, audit log, search history |
 | **P1** | Fase 6 — Pivot + Correlation | PivotEngine com `visited_entities`, depth/budget; CorrelationEngine com pesos configuráveis e sinais negativos; score explicado |
 | **P1** | Fase 3 — Telegram + GitHub | Telethon (sessão legítima), GitHub REST (perfil, repositórios, emails de commit públicos) |
@@ -190,10 +210,13 @@ Legenda: **IMPLEMENTADO** · **PARCIAL** · **AUSENTE** · **PRECISA REFATORAÇ�
 
 ## 9. Próxima etapa recomendada
 
-**Fase 2a + 2b: resiliência de providers e entity extractors**, antes do primeiro provider de rede.
+**Fase 2d — Archive Intelligence (Wayback Machine CDX + Common Crawl Index)** seguida de **persistência de Case**.
 
-Motivo: todo provider externo dependerá de rate limit, retry/backoff, cache e cliente HTTP seguro (SSRF), e
-todo conteúdo coletado precisará passar por extractors para gerar entidades. Implementar isso uma vez, no
-`BaseProvider`/`HTTPProvider`, evita duplicação em dezenas de providers e é pré-requisito do PivotEngine.
-Em seguida, o SearchManager com Brave Search API (oficial, com chave) fornece o primeiro fluxo real
-ponta a ponta usando as consultas que o QueryPlanner já gera.
+Motivos:
+- são as primeiras fontes externas **gratuitas e sem chave**, então a plataforma passa a produzir evidência
+  real imediatamente, mesmo sem contratos;
+- exercitam o que ainda não foi usado em produção: `is_historical`, `observed_at` ≠ `collected_at` e
+  deduplicação de URLs (histórico × atual) — base da Timeline;
+- reutilizam integralmente SafeHTTPClient, resiliência e extractors;
+- a persistência (SQLite em dev / PostgreSQL) logo depois torna o search log, as evidências e o cache
+  duráveis, pré-requisito do PivotEngine e do modo INVESTIGATION.

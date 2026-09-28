@@ -9,6 +9,7 @@ from osintizada.providers.base.provider import (
     PaidProvider,
     ProviderError,
     RateLimitedError,
+    SkippedError,
     TorProvider,
 )
 from osintizada.providers.base.registry import (
@@ -20,6 +21,6 @@ from osintizada.providers.base.registry import (
 
 __all__ = [
     "APIProvider", "AuthRequiredError", "BaseProvider", "BrowserProvider", "HealthStatus", "HTTPProvider",
-    "LocalProvider", "PaidProvider", "ProviderError", "RateLimitedError", "TorProvider", "ProviderRegistry",
+    "LocalProvider", "PaidProvider", "ProviderError", "RateLimitedError", "SkippedError", "TorProvider", "ProviderRegistry",
     "default_registry", "load_builtin_providers", "register_provider",
 ]

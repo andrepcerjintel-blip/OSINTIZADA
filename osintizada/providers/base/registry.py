@@ -14,6 +14,7 @@ import pkgutil
 from osintizada.config import Settings
 from osintizada.core.enums import IdentifierType
 from osintizada.providers.base.provider import BaseProvider
+from osintizada.resilience import ProviderRuntime
 
 
 class ProviderRegistry:
@@ -36,8 +37,9 @@ class ProviderRegistry:
     def get_class(self, name: str) -> type[BaseProvider]:
         return self._classes[name]
 
-    def create_all(self, settings: Settings | None = None) -> list[BaseProvider]:
-        return [cls(settings) for _, cls in sorted(self._classes.items())]
+    def create_all(self, settings: Settings | None = None, runtime: ProviderRuntime | None = None) -> list[BaseProvider]:
+        runtime = runtime or ProviderRuntime()
+        return [cls(settings, runtime) for _, cls in sorted(self._classes.items())]
 
     def classes_for(self, identifier_type: IdentifierType) -> list[type[BaseProvider]]:
         return [c for c in self._classes.values() if identifier_type in c.supported_identifiers]
@@ -56,7 +58,7 @@ def register_provider(cls: type[BaseProvider]) -> type[BaseProvider]:
     return default_registry.register(cls)
 
 
-_BUILTIN_PACKAGES = ("osintizada.providers.local",)
+_BUILTIN_PACKAGES = ("osintizada.providers.local", "osintizada.providers.search")
 
 
 def load_builtin_providers() -> ProviderRegistry:

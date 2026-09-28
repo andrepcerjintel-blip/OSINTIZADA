@@ -21,10 +21,13 @@ def test_plan_forced_type(capsys):
     assert all(q["identifier_type"] == "cpf" for q in data)
 
 
-def test_run_and_providers(capsys):
+def test_run_and_providers(capsys, monkeypatch):
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
     assert main(["run", "a@example.org", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["search_log"][0]["status"] == "SUCCESS"
+    by = {e["provider"]: e["status"] for e in data["search_log"]}
+    assert by["local.identifier_analysis"] == "SUCCESS"
+    assert by["search.brave"] == "NOT_CONFIGURED"  # sem chave: nunca simula resultado
     assert main(["providers", "--json"]) == 0
     assert "local.identifier_analysis" in capsys.readouterr().out
 

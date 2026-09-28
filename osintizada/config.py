@@ -62,6 +62,21 @@ class QueryBudget(BaseModel):
     max_cost_per_search: int = 200
 
 
+class ResilienceSettings(BaseModel):
+    max_retries: int = 2                     # re-tentativas para falhas transitórias (5xx, conexão)
+    backoff_base_seconds: float = 0.5
+    backoff_max_seconds: float = 8.0
+    breaker_failure_threshold: int = 5       # falhas consecutivas para abrir o circuito
+    breaker_recovery_seconds: float = 120.0
+    default_cooldown_seconds: float = 60.0   # pausa após 429 sem Retry-After
+    default_cache_ttl_seconds: int = 3600
+    max_response_bytes: int = 5 * 1024 * 1024
+
+
+class NetworkSettings(BaseModel):
+    user_agent: str = "OSINTIZADA/0.2 (+investigation research tool)"
+
+
 class TorSettings(BaseModel):
     mode: str = "TOR_DISABLED"  # TOR_DISABLED | TOR_PASSIVE | TOR_DEEP_SEARCH
     socks_proxy: str = "socks5h://127.0.0.1:9050"
@@ -99,6 +114,8 @@ class Settings(BaseModel):
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     query_budget: QueryBudget = Field(default_factory=QueryBudget)
     tor: TorSettings = Field(default_factory=TorSettings)
+    resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
+    network: NetworkSettings = Field(default_factory=NetworkSettings)
 
     def mode(self, mode: SearchMode) -> ModeProfile:
         return self.modes[mode]

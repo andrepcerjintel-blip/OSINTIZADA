@@ -8,15 +8,11 @@ Nenhuma rede é usada e todo resultado é classificado como DERIVED.
 from __future__ import annotations
 
 from osintizada.core.enums import DataClassification, EntityType, IdentifierType, RelationType
-from osintizada.core.models import NormalizedIdentifier, ProviderResult
+from osintizada.core.models import NormalizedIdentifier, ProviderResult, social_account_value
 from osintizada.core.normalization import normalize_host
 from osintizada.core.urls import parse_social_url
 from osintizada.core.validators import registrable_domain
 from osintizada.providers.base import LocalProvider, register_provider
-
-_SOCIAL_ENTITY = {
-    IdentifierType.TELEGRAM_USERNAME: EntityType.TELEGRAM_USER,
-}
 
 # Provedores de email gratuitos: o domínio não indica organização.
 FREE_MAIL_DOMAINS = frozenset(
@@ -78,10 +74,12 @@ class IdentifierAnalysisProvider(LocalProvider):
         results = self._from_host(host, original)
         social = parse_social_url(original)
         if social is not None:
-            etype = _SOCIAL_ENTITY.get(social.identifier_type, EntityType.SOCIAL_ACCOUNT)
-            value = social.handle.lower() if social.platform != "youtube" else social.handle
+            if social.identifier_type == IdentifierType.TELEGRAM_USERNAME:
+                etype, value = EntityType.TELEGRAM_USER, social.handle.lower()
+            else:
+                etype, value = EntityType.SOCIAL_ACCOUNT, social_account_value(social.platform, social.handle)
             results.append(
-                self._derived(etype, f"{social.platform}:{value}", original, "social_profile_url",
+                self._derived(etype, value, original, "social_profile_url",
                               RelationType.LINKS_TO, f"URL aponta para perfil {social.platform}",
                               platform=social.platform, handle=social.handle)
             )

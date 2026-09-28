@@ -2,6 +2,36 @@
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [0.2.0] — 2026-09-28 — Fase 2a–2c: resiliência, extractors e search engines
+
+### Adicionado
+- **Resiliência** (`osintizada/resilience/`): token bucket por provider, cooldown após HTTP 429 respeitando
+  `Retry-After`, retry com backoff exponencial + jitter apenas para falhas transitórias, circuit breaker
+  (closed/open/half-open), cache TTL por provider com versão de parser na chave, `ProviderRuntime` compartilhado
+  com métricas (chamadas, cache hits, retries, rate limits).
+- **Rede segura** (`osintizada/net/`): `SafeHTTPClient` com proteção SSRF (resolve e bloqueia IPs não públicos,
+  metadados de nuvem, IPv4 mapeado), redirecionamentos revalidados, limite de tamanho, timeouts, parsing de
+  `Retry-After`.
+- **Entity Extractors** (`osintizada/extractors/`): URL, Telegram (inclui convites), perfis sociais, email
+  (inclui ofuscado), cripto, CPF, CNPJ, IP/CIDR, ASN, domínio, telefone, hash e menções, com pipeline que evita
+  sobreposição e deduplica ocorrências.
+- **Search engines**: `SearchEngineProvider` base, **Brave Search API** e **Google Programmable Search**;
+  consultas com operadores não suportados são recusadas (SKIPPED), nunca alteradas.
+- **SearchManager**: compatibilidade consulta×mecanismo e agregação de páginas entre mecanismos.
+- Orquestrador executa as consultas do QueryPlanner nos mecanismos, com limite de consultas do modo,
+  orçamento e registro de `reason`/prioridade de cada consulta no search log; **RAW SEARCH executável**.
+- Carregamento de `.env` local (sem sobrescrever o ambiente).
+- CLI: `search`, `extract`, `providers --health`; `run` mostra páginas deduplicadas e uso do orçamento.
+- `BaseProvider.http_client()` / `fetch()` com mapeamento padronizado de HTTP 429/401/5xx.
+- Status `SKIPPED` via `SkippedError`; `rate_limit_per_minute: 0` desativa o limite padrão.
+- 78 novos testes (189 no total), todos com rede simulada.
+
+### Alterado
+- `BaseProvider.search()` passa a aplicar cache → cooldown → circuit breaker → concorrência → rate limit →
+  retry → timeout. Contrato público (`search`, `_search`, status) inalterado.
+- Valor canônico de contas sociais unificado como `plataforma:handle` (seeds e derivações usavam formatos
+  diferentes); `TELEGRAM_USER` usa o handle em minúsculas.
+
 ## [0.1.0] — 2026-09-28 — Fase 1: Core
 
 ### Adicionado

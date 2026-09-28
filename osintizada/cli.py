@@ -5,7 +5,9 @@ Comandos:
   plan <input> [--mode]      consultas planejadas com prioridade e motivo
   raw "<consulta>"           registra uma RAW SEARCH (sem executar)
   run <input>... [--mode]    executa providers disponíveis (depth 0)
-  providers                  status/configuração dos providers
+  search "<consulta>"        executa RAW SEARCH nos mecanismos configurados
+  extract [texto|--file]     extrai entidades de texto livre (offline)
+  providers [--health]       status/configuração dos providers
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from typing import Any
 
@@ -22,6 +25,8 @@ from osintizada.core.enums import IdentifierType, SearchMode
 from osintizada.core.identifiers import IdentifierEngine
 from osintizada.core.normalization import normalize
 from osintizada.core.query_planner import QueryPlanner
+from osintizada.core.secrets import load_dotenv
+from osintizada.extractors import ExtractionPipeline
 from osintizada.orchestration.source_orchestrator import SourceOrchestrator
 from osintizada.providers.base import load_builtin_providers
 
@@ -90,36 +95,85 @@ def cmd_raw(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    idents = _identifiers(args.input, args.type, 0.3)
-    orchestrator = SourceOrchestrator()
-    run = asyncio.run(orchestrator.run(idents, mode=SearchMode(args.mode),
-                                       allowed=set(args.providers) if args.providers else None))
-    if args.json:
+def _print_run(run, as_json: bool) -> None:
+    if as_json:
         payload = run.model_dump(mode="json")
         payload["search_log"] = [e.model_dump(mode="json") for e in run.search_log]
+        payload["search_hits"] = [h.model_dump(mode="json") | {"engines": h.engines} for h in run.search_hits()]
         _dump(payload)
-        return 0
+        return
     print("SEEDS:")
     for s in run.seeds:
         print(f"  [SEED] {s.type.value}: {s.value}")
     print("\nEXECUÇÃO:")
     for entry in run.search_log:
         err = f" — {'; '.join(entry.errors)}" if entry.errors else ""
-        print(f"  {entry.provider:<32} {entry.status.value:<15} {entry.results} resultado(s){err}")
+        cache = " (cache)" if entry.cache_hit else ""
+        query = f"  {entry.query}" if entry.reason else ""
+        print(f"  {entry.provider:<28} {entry.status.value:<15} {entry.results:>3} resultado(s){cache}{query}{err}")
+    hits = run.search_hits()
+    if hits:
+        print("\nPÁGINAS (deduplicadas entre mecanismos):")
+        for h in hits[:30]:
+            flag = "✓" if h.identifier_in_snippet else " "
+            print(f"  {flag} [{', '.join(h.engines)}] {h.title or ''}\n      {h.url}")
     print("\nENTIDADES:")
-    for e in run.entities:
+    shown = [e for e in run.entities if e.type.value != "URL"]
+    for e in shown:
         print(f"  [{e.origin.value}] {e.type.value}: {e.value}  (evidências: {len(e.evidence_ids)})")
-    if not run.entities:
+    if not shown:
         print("  (nenhuma)")
+    print(f"\nOrçamento usado: {run.budget_spent}")
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    idents = _identifiers(args.input, args.type, 0.3)
+    orchestrator = SourceOrchestrator()
+    run = asyncio.run(orchestrator.run(idents, mode=SearchMode(args.mode),
+                                       allowed=set(args.providers) if args.providers else None))
+    _print_run(run, args.json)
+    return 0
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    orchestrator = SourceOrchestrator()
+    run = asyncio.run(orchestrator.run_raw(args.query, allowed=set(args.providers) if args.providers else None))
+    _print_run(run, args.json)
+    return 0
+
+
+def cmd_extract(args: argparse.Namespace) -> int:
+    if args.file:
+        with open(args.file, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    elif args.text:
+        text = " ".join(args.text)
+    else:
+        text = sys.stdin.read()
+    extractions = ExtractionPipeline().extract(text)
+    if args.json:
+        _dump([e.model_dump(mode="json") for e in extractions])
+        return 0
+    for e in extractions:
+        print(f"  {e.confidence:>4.2f}  {e.type.value:<18} {e.value}")
+        print(f"        {e.context}")
+    if not extractions:
+        print("  (nenhuma entidade encontrada)")
     return 0
 
 
 def cmd_providers(args: argparse.Namespace) -> int:
     settings = get_settings()
     registry = load_builtin_providers()
+    providers = registry.create_all(settings)
+    health = {}
+    if args.health:
+        async def check():
+            return await asyncio.gather(*(p.healthcheck() for p in providers))
+        health = {h.provider: h for h in asyncio.run(check())}
     rows = []
-    for p in registry.create_all(settings):
+    for p in providers:
+        h = health.get(p.name)
         rows.append({
             "name": p.name,
             "type": p.provider_type.value,
@@ -128,14 +182,20 @@ def cmd_providers(args: argparse.Namespace) -> int:
             "enabled": p.enabled,
             "status": "CONNECTED" if p.is_configured() else "NOT CONFIGURED",
             "credentials": p.masked_credentials(),
-            "supports": sorted(t.value for t in p.supported_identifiers),
+            "supports": "all" if p.consumes_planned_queries else sorted(t.value for t in p.supported_identifiers),
+            "health": h.model_dump(mode="json") if h else None,
         })
     if args.json:
         _dump(rows)
         return 0
     for r in rows:
         state = r["status"] if r["enabled"] else "DISABLED"
-        print(f"{r['name']:<32} {state:<15} tier {r['tier']}  [{r['tag']}]  {', '.join(r['supports'])}")
+        supports = r["supports"] if isinstance(r["supports"], str) else ", ".join(r["supports"])
+        print(f"{r['name']:<28} {state:<15} tier {r['tier']}  [{r['tag']}]  {supports}")
+        if r["health"]:
+            h = r["health"]
+            latency = f" {h['latency_ms']}ms" if h["latency_ms"] is not None else ""
+            print(f"    health: {h['status']}{latency}  circuit: {h['circuit']}  {h['detail'] or ''}")
     return 0
 
 
@@ -172,7 +232,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_run)
 
+    p = sub.add_parser("search", help="Executa uma RAW SEARCH nos mecanismos configurados")
+    p.add_argument("query")
+    p.add_argument("--providers", nargs="*")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("extract", help="Extrai entidades de texto (argumento, --file ou stdin)")
+    p.add_argument("text", nargs="*")
+    p.add_argument("--file")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_extract)
+
     p = sub.add_parser("providers", help="Lista providers e status de configuração")
+    p.add_argument("--health", action="store_true", help="Executa healthcheck (pode consumir quota)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_providers)
     return parser
@@ -180,6 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    load_dotenv(os.environ.get("OSINTIZADA_ENV_FILE", ".env"))
     try:
         return args.func(args)
     except ValueError as exc:
