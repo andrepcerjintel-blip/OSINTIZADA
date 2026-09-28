@@ -71,7 +71,8 @@ def _ct_rows():
 
 
 def http_handler(request: httpx.Request) -> httpx.Response:
-    host, path = request.url.host, request.url.path
+    # Com IP pinning a URL chega com o IP; o hostname lógico está no header Host.
+    host, path = request.headers["host"].split(":")[0], request.url.path
     if host == "rdap.org":
         return httpx.Response(302, headers={"location": f"https://rdap.test-rir.net{path}"})
     if host == "rdap.test-rir.net":
@@ -85,6 +86,13 @@ def http_handler(request: httpx.Request) -> httpx.Response:
     if host == "crt.sh":
         return httpx.Response(200, json=_ct_rows() if request.url.params["q"] == "%.example.com" else [])
     if host == "web.archive.org":
+        params = request.url.params
+        if params.get("url") == "example.com" and params.get("matchType") == "domain":
+            return httpx.Response(200, json=[
+                ["timestamp", "original", "statuscode", "mimetype", "digest"],
+                ["20020120142510", "http://example.com:80/", "200", "text/html", "AAA"],
+                ["20150302101010", "http://old.example.com/contato.html", "200", "text/html", "BBB"],
+            ])
         return httpx.Response(200, json=[])
     return httpx.Response(599, text="host inesperado no teste")
 

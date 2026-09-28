@@ -257,3 +257,68 @@ class AuditLogRow(Base):
     component: Mapped[str] = mapped_column(String(80))
     message: Mapped[str] = mapped_column(Text)
     meta: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+
+
+class JobRow(Base):
+    """Execução (≠ Case). Um Case pode ter vários Jobs. O banco é a fonte da verdade; a fila só transporta o id."""
+
+    __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_status_heartbeat", "status", "heartbeat_at"),)
+
+    id: Mapped[str] = _id()
+    case_id: Mapped[str] = _case_fk()
+    job_type: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    created_at: Mapped[datetime] = _created()
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    execution_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    stage: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    progress: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    checkpoint: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    request: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    investigation_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("investigations.id"), nullable=True)
+    retry_of: Mapped[str | None] = mapped_column(String(32), ForeignKey("jobs.id"), nullable=True)
+    meta: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+
+
+class JobAttemptRow(Base):
+    """Histórico de tentativas: nada é sobrescrito."""
+
+    __tablename__ = "job_attempts"
+    __table_args__ = (UniqueConstraint("job_id", "attempt", name="uq_job_attempt"),)
+
+    id: Mapped[str] = _id()
+    job_id: Mapped[str] = mapped_column(String(32), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    attempt: Mapped[int] = mapped_column(Integer)
+    worker_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    execution_token: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(20))
+    started_at: Mapped[datetime] = _created()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class JobEventRow(Base):
+    """Eventos persistentes de progresso (base do SSE)."""
+
+    __tablename__ = "job_events"
+    __table_args__ = (Index("ix_job_events_job_id_id", "job_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(32), ForeignKey("jobs.id", ondelete="CASCADE"))
+    case_id: Mapped[str] = mapped_column(String(32), ForeignKey("cases.id", ondelete="CASCADE"))
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    event_type: Mapped[str] = mapped_column(String(40))
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

@@ -1,8 +1,12 @@
 """Cache de respostas de providers.
 
-Chave = provider + versão do parser + tipo + valor + consulta + parâmetros.
+Chave: ``<prefix>:provider:<nome>:<versão do parser>:<sha256(tipo, valor, consulta, parâmetros)>``.
 Só respostas concluídas (SUCCESS / NO_RESULTS) são cacheadas: falhas nunca.
-A interface ``CacheBackend`` permite trocar por Redis sem alterar providers.
+
+Os valores são SEMPRE JSON (nunca pickle): dados externos não podem virar código
+ao serem lidos. Quem lê valida o payload e descarta entradas corrompidas.
+A interface ``CacheBackend`` é do Core; ``RedisCacheBackend`` fica em
+``osintizada.infrastructure`` (o Core não depende de Redis).
 """
 
 from __future__ import annotations
@@ -17,15 +21,18 @@ from typing import Any
 
 
 def cache_key(provider: str, parser_version: str, identifier_type: str, value: str, query: str | None,
-              params: dict[str, Any] | None = None) -> str:
+              params: dict[str, Any] | None = None, prefix: str = "osintizada") -> str:
     payload = json.dumps(
-        {"p": provider, "v": parser_version, "t": identifier_type, "id": value, "q": query, "params": params or {}},
+        {"t": identifier_type, "id": " ".join(str(value).split()), "q": " ".join(query.split()) if query else None,
+         "params": params or {}},
         sort_keys=True, ensure_ascii=False,
     )
-    return f"osintizada:{provider}:{hashlib.sha256(payload.encode()).hexdigest()}"
+    return f"{prefix}:provider:{provider}:{parser_version}:{hashlib.sha256(payload.encode()).hexdigest()}"
 
 
 class CacheBackend(ABC):
+    """Armazena valores JSON-serializáveis com TTL."""
+
     @abstractmethod
     def get(self, key: str) -> Any | None: ...
 
@@ -33,7 +40,14 @@ class CacheBackend(ABC):
     def set(self, key: str, value: Any, ttl_seconds: float) -> None: ...
 
     @abstractmethod
+    def delete(self, key: str) -> None: ...
+
+    @abstractmethod
     def clear(self) -> None: ...
+
+    @property
+    def name(self) -> str:
+        return type(self).__name__
 
 
 class InMemoryTTLCache(CacheBackend):
@@ -56,18 +70,25 @@ class InMemoryTTLCache(CacheBackend):
             return None
         self._data.move_to_end(key)
         self.hits += 1
-        return value
+        return json.loads(value)
 
     def set(self, key: str, value: Any, ttl_seconds: float) -> None:
         if ttl_seconds <= 0:
             return
-        self._data[key] = (self._clock() + ttl_seconds, value)
+        # Serializa já na escrita: mesma semântica do Redis (JSON), sem referências compartilhadas.
+        self._data[key] = (self._clock() + ttl_seconds, json.dumps(value, ensure_ascii=False, default=str))
         self._data.move_to_end(key)
         while len(self._data) > self.max_entries:
             self._data.popitem(last=False)
+
+    def delete(self, key: str) -> None:
+        self._data.pop(key, None)
 
     def clear(self) -> None:
         self._data.clear()
 
     def __len__(self) -> int:
         return len(self._data)
+
+
+MemoryCacheBackend = InMemoryTTLCache

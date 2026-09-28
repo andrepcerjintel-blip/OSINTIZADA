@@ -19,6 +19,7 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -45,11 +46,12 @@ from osintizada.core.normalization import normalize
 from osintizada.core.secrets import sanitize
 from osintizada.core.urls import canonical_url
 from osintizada.db import Database
-from osintizada.db.tables import EntityRow
+from osintizada.db.tables import EntityRow, utcnow
+from osintizada.investigation.control import ExecutionControl, InvestigationCancelled, NullControl
 from osintizada.investigation.correlation import CorrelationEngine, RelationView, detect_conflicts
 from osintizada.investigation.pivot import EntitySnapshot, PivotDecision, PivotEngine
 from osintizada.observability import case_context
-from osintizada.orchestration.source_orchestrator import SearchRun, SourceOrchestrator
+from osintizada.orchestration.source_orchestrator import RunHooks, SearchRun, SourceOrchestrator
 from osintizada.repositories import (
     AuditRepository,
     CaseRepository,
@@ -84,6 +86,9 @@ class InvestigationRequest(BaseModel):
     providers: list[str] | None = None          # restringe aos providers informados
     blocked_providers: list[str] = Field(default_factory=list)
     blocked_values: list[str] = Field(default_factory=list)  # entidades/domínios que não devem ser pivotados
+    # False (padrão): consultas já concluídas com sucesso neste Case (dentro da janela configurada)
+    # não são repetidas — o banco é a memória investigativa. True força nova coleta.
+    refresh: bool = False
 
     @field_validator("inputs")
     @classmethod
@@ -128,6 +133,20 @@ class RunState:
     budget_events: list[str] = field(default_factory=list)
     stats: Counter = field(default_factory=Counter)
     blocked_values: set[str] = field(default_factory=set)
+    control: ExecutionControl = field(default_factory=NullControl)
+    depth: int = 0
+    round_started: int = 0
+    round_finished: int = 0
+    pending_events: list = field(default_factory=list)
+
+    def defer(self, event_type: str, data: dict) -> None:
+        """Eventos gerados dentro de uma transação só são emitidos após o commit."""
+        self.pending_events.append((event_type, data))
+
+    def flush_events(self) -> None:
+        events, self.pending_events = self.pending_events, []
+        for event_type, data in events:
+            self.control.emit(event_type, data)
 
 
 class InvestigationService:
@@ -159,15 +178,19 @@ class InvestigationService:
             max_runtime_seconds=request.max_runtime_seconds or profile.max_runtime_seconds,
         )
 
-    def start(self, case_id: str, request: InvestigationRequest) -> str:
-        """Valida e registra o início (síncrono). A coleta roda em ``run`` (background ou await)."""
+    def start(self, case_id: str, request: InvestigationRequest, enforce_idle: bool = True) -> str:
+        """Valida e registra o início (síncrono). A coleta roda em ``run``.
+
+        ``enforce_idle=False`` é usado pelo worker: a exclusividade é garantida pelo lock
+        distribuído do Case, não pelo status (que é derivado dos Jobs).
+        """
         limits = self.resolve_limits(request)
         with self.db.session() as s:
             cases = CaseRepository(s)
             case = cases.get(case_id)
             if case is None:
                 raise LookupError(f"Case {case_id} não encontrado")
-            if case.status == CaseStatus.RUNNING.value:
+            if enforce_idle and case.status == CaseStatus.RUNNING.value:
                 raise RuntimeError("Case já possui investigação em andamento")
             if case.status == CaseStatus.ARCHIVED.value:
                 raise RuntimeError("Case arquivado não aceita novas investigações")
@@ -186,12 +209,23 @@ class InvestigationService:
 
     # --- ciclo -----------------------------------------------------------------------------
 
-    async def run(self, case_id: str, investigation_id: str, request: InvestigationRequest) -> dict:
+    async def run(self, case_id: str, investigation_id: str, request: InvestigationRequest,
+                  control: ExecutionControl | None = None) -> dict:
+        control = control or NullControl()
         with case_context(case_id):
             state = RunState(limits=self.resolve_limits(request),
-                             blocked_values={v.lower() for v in request.blocked_values})
+                             blocked_values={v.lower() for v in request.blocked_values}, control=control)
             try:
                 summary = await self._run(case_id, investigation_id, request, state)
+            except InvestigationCancelled:
+                with self.db.session() as s:
+                    InvestigationRepository(s).finish(InvestigationRepository(s).get(investigation_id), "CANCELLED",
+                                                      {"cancelled": True, "provider_calls": state.provider_calls,
+                                                       "entities_total": state.entity_count})
+                    AuditRepository(s).log(case_id, AuditEvent.CASE_FINISHED, COMPONENT,
+                                           "Investigação cancelada; dados já coletados foram preservados",
+                                           {"investigation_id": investigation_id, "cancelled": True})
+                raise
             except Exception as exc:
                 log.exception("investigation failed", extra={"investigation_id": investigation_id})
                 with self.db.session() as s:
@@ -208,13 +242,33 @@ class InvestigationService:
 
     async def _run(self, case_id: str, investigation_id: str, request: InvestigationRequest,
                    state: RunState) -> dict:
-        limits = state.limits
+        limits, control = state.limits, state.control
         started = time.monotonic()
         deadline = started + limits.max_runtime_seconds
-        frontier = self._register_seeds(case_id, investigation_id, request, state)
+        checkpoint = control.load_checkpoint() or {}
 
-        depth = 0
+        if checkpoint.get("name") == "CORRELATION_COMPLETED":
+            self._restore_state(case_id, checkpoint, state)
+            analysis = checkpoint.get("analysis", {})
+            return self._complete(case_id, investigation_id, request, state, checkpoint.get("depth", 0),
+                                  analysis.get("correlations", 0), analysis.get("conflicts", 0), started)
+        if checkpoint.get("frontier") is not None:
+            frontier = self._restore_state(case_id, checkpoint, state)
+            depth = int(checkpoint.get("depth", 0))
+            control.emit("JOB_CHECKPOINT", {"resumed_from": checkpoint.get("name"), "depth": depth,
+                                            "pending_identifiers": len(frontier)})
+            with self.db.session() as s:
+                AuditRepository(s).log(case_id, AuditEvent.JOB_RECOVERED, COMPONENT,
+                                       f"Investigação retomada a partir do checkpoint {checkpoint.get('name')}",
+                                       {"investigation_id": investigation_id, "depth": depth})
+        else:
+            control.progress("SEEDS", progress=1)
+            frontier = self._register_seeds(case_id, investigation_id, request, state)
+            depth = 0
+            control.checkpoint("SEEDS_PROCESSED", self._snapshot(depth, frontier, state))
+
         while frontier:
+            control.check_cancelled()
             if time.monotonic() >= deadline:
                 self._budget(case_id, state, "max_runtime", f"Tempo máximo ({limits.max_runtime_seconds}s) atingido")
                 break
@@ -224,28 +278,48 @@ class InvestigationService:
                              f"Limite de chamadas a providers ({limits.max_provider_calls}) atingido")
                 break
 
+            state.depth, state.round_started, state.round_finished = depth, 0, 0
+            stage = "INITIAL_PROVIDERS" if depth == 0 else f"PIVOT_DEPTH_{depth}"
+            self._progress(state, stage)
             with self.db.session() as s:
                 AuditRepository(s).log(case_id, AuditEvent.SEARCH_STARTED, "SourceOrchestrator",
                                        f"Rodada depth={depth}: {len(frontier)} identificador(es)",
                                        {"investigation_id": investigation_id, "depth": depth,
                                         "identifiers": [t.canonical_value for t in frontier][:50]})
+            hooks = RunHooks(
+                is_cancelled=control.is_cancelled,
+                already_executed=None if request.refresh else self._execution_memory(case_id, frontier),
+                on_start=lambda provider, ident, query: self._on_provider_start(state, provider, ident, query),
+                on_finish=lambda response: self._on_provider_finish(state, response),
+            )
             run = await self.orchestrator.run(
                 [t.identifier for t in frontier], mode=request.mode, case_id=case_id,
                 allowed=set(request.providers) if request.providers else None,
                 blocked=set(request.blocked_providers) or None, depth=depth,
-                call_limit=remaining_calls, deadline=deadline,
+                call_limit=remaining_calls, deadline=deadline, hooks=hooks,
             )
             for t in frontier:
                 state.visited.add(t.fingerprint)
             new_entities = self._persist_round(case_id, investigation_id, run, frontier, depth, state)
             frontier = self._pivot(case_id, investigation_id, new_entities, state)
+            name = "INITIAL_PROVIDERS_COMPLETED" if depth == 0 else f"PIVOTS_DEPTH_{depth}_COMPLETED"
             depth += 1
+            control.checkpoint(name, self._snapshot(depth, frontier, state))
+            control.check_cancelled()  # após persistir: nada coletado é perdido
 
+        self._progress(state, "CORRELATION")
         correlations, conflicts = self._finalize_analysis(case_id)
+        snapshot = self._snapshot(depth, [], state)
+        snapshot["analysis"] = {"correlations": correlations, "conflicts": conflicts}
+        control.checkpoint("CORRELATION_COMPLETED", snapshot)
+        return self._complete(case_id, investigation_id, request, state, depth, correlations, conflicts, started)
+
+    def _complete(self, case_id: str, investigation_id: str, request: InvestigationRequest, state: RunState,
+                  depth: int, correlations: int, conflicts: int, started: float) -> dict:
         summary = {
             "investigation_id": investigation_id,
             "mode": request.mode.value,
-            "limits": limits.__dict__,
+            "limits": state.limits.__dict__,
             "depth_reached": max(0, depth - 1),
             "provider_calls": state.provider_calls,
             "entities_total": state.entity_count,
@@ -265,7 +339,82 @@ class InvestigationService:
                                    f"Investigação concluída: {state.entity_count} entidades, "
                                    f"{state.provider_calls} chamadas, {state.pivots_scheduled} pivôs",
                                    {"investigation_id": investigation_id, "summary": summary})
+        self._progress(state, "COMPLETED", progress=100)
         return summary
+
+    # --- checkpoints / retomada ---------------------------------------------------------------
+
+    @staticmethod
+    def _snapshot(depth: int, frontier: list[Target], state: RunState) -> dict:
+        """Estado mínimo para reconstruir o trabalho pendente (não serializa pilha interna)."""
+        return {
+            "depth": depth,
+            "frontier": [{"entity_id": t.entity_id, "entity_type": t.entity_type.value,
+                          "canonical_value": t.canonical_value, "fingerprint": t.fingerprint, "depth": t.depth,
+                          "identifier_type": t.identifier.type.value, "identifier_value": t.identifier.original}
+                         for t in frontier],
+            "visited": sorted(state.visited),
+            "scheduled": sorted(state.scheduled),
+            "provider_calls": state.provider_calls,
+            "pivots_scheduled": state.pivots_scheduled,
+            "budget_events": list(state.budget_events),
+            "stats": dict(state.stats),
+        }
+
+    def _restore_state(self, case_id: str, checkpoint: dict, state: RunState) -> list[Target]:
+        state.visited = set(checkpoint.get("visited", []))
+        state.scheduled = set(checkpoint.get("scheduled", []))
+        state.provider_calls = int(checkpoint.get("provider_calls", 0))
+        state.pivots_scheduled = int(checkpoint.get("pivots_scheduled", 0))
+        state.budget_events = list(checkpoint.get("budget_events", []))
+        state.stats.update(checkpoint.get("stats", {}))
+        with self.db.session() as s:
+            state.entity_count = EntityRepository(s).count(case_id)
+        frontier = []
+        for item in checkpoint.get("frontier") or []:
+            ident = normalize(item["identifier_value"], IdentifierType(item["identifier_type"]))
+            frontier.append(Target(ident, item["entity_id"], EntityType(item["entity_type"]),
+                                   item["canonical_value"], item["fingerprint"], int(item["depth"])))
+        return frontier
+
+    def _execution_memory(self, case_id: str, frontier: list[Target]):
+        """Consulta o banco antes de chamar um provider: SUCCESS/EMPTY recente não é repetido."""
+        by_value = {t.identifier.value: t for t in frontier}
+        cutoff = utcnow() - timedelta(hours=self.settings.jobs.reuse_executions_max_age_hours)
+
+        def lookup(provider: str, ident: NormalizedIdentifier, query: str) -> str | None:
+            target = by_value.get(ident.value)
+            if target is None:
+                return None
+            with self.db.session() as s:
+                return SearchRepository(s).find_reusable(case_id, provider, ident.type.value,
+                                                         target.canonical_value, query, cutoff)
+        return lookup
+
+    # --- progresso ------------------------------------------------------------------------------
+
+    def _progress(self, state: RunState, stage: str, progress: int | None = None) -> None:
+        if progress is None:
+            rounds = state.limits.max_depth + 2  # rodadas possíveis + correlação (aproximado)
+            fraction = state.round_finished / state.round_started if state.round_started else 0.0
+            progress = min(99, int(100 * (state.depth + fraction) / rounds))
+        state.control.progress(
+            stage, progress=progress, depth=state.depth, providers_completed=state.round_finished,
+            providers_total=state.round_started, provider_calls=state.provider_calls,
+            entities_found=state.entity_count, evidence_found=state.stats.get("evidence_created", 0),
+            pivots_processed=state.pivots_scheduled)
+
+    def _on_provider_start(self, state: RunState, provider: str, ident: NormalizedIdentifier, query) -> None:
+        state.round_started += 1
+        state.control.emit("PROVIDER_STARTED", {"provider": provider, "identifier": ident.value, "query": query,
+                                                "depth": state.depth})
+
+    def _on_provider_finish(self, state: RunState, response: ProviderResponse) -> None:
+        state.round_finished += 1
+        state.control.emit("PROVIDER_FINISHED", {
+            "provider": response.provider, "status": response.status.value, "results": len(response.results),
+            "error_code": response.error_code, "cache_hit": bool(response.metadata.get("cache_hit"))})
+        self._progress(state, "INITIAL_PROVIDERS" if state.depth == 0 else f"PIVOT_DEPTH_{state.depth}")
 
     # --- seeds -----------------------------------------------------------------------------
 
@@ -330,6 +479,13 @@ class InvestigationService:
                     repos.audit.log(case_id, AuditEvent.PROVIDER_FAILED, response.provider,
                                     f"{response.provider}: {response.status.value} {response.error_code or ''}",
                                     {"search_execution_id": execution.id, "errors": response.errors})
+                if target is not None and response.error_code == "ALREADY_EXECUTED":
+                    # Retomada: entidades descobertas por aquela execução voltam a ser candidatas a pivô.
+                    previous = response.metadata.get("previous_execution_id")
+                    for ent in repos.entities.created_by_execution(case_id, previous, min_depth=target.depth + 1):
+                        new_entities.append((ent, target.entity_id, response.provider))
+                    state.stats["executions_reused"] += 1
+                    continue
                 if target is None or not response.results:
                     continue
                 # Resultados sem source_entity primeiro: garantem que a origem exista antes das relações derivadas.
@@ -343,6 +499,7 @@ class InvestigationService:
                             f"{len(new_entities)} entidade(s) nova(s)",
                             {"investigation_id": investigation_id, "depth": depth,
                              "status": dict(Counter(r.status.value for r in run.responses))})
+        state.flush_events()
         return new_entities
 
     def _persist_result(self, case_id: str, repos: _Repos, response: ProviderResponse, result: ProviderResult,
@@ -370,6 +527,9 @@ class InvestigationService:
             metadata={"first_seen_by": response.provider})
         if created:
             state.entity_count += 1
+            state.defer("ENTITY_CREATED", {"entity_id": entity.id, "type": entity.type,
+                                                  "value": entity.canonical_value, "depth": entity.depth,
+                                                  "provider": response.provider})
             repos.audit.log(case_id, AuditEvent.ENTITY_CREATED, response.provider,
                             f"{entity.type} '{entity.canonical_value}' (depth {entity.depth})",
                             {"entity_id": entity.id, "search_execution_id": execution_id})
@@ -389,6 +549,7 @@ class InvestigationService:
                       "attributes": result.attributes},
         )
         if ev_created:
+            state.stats["evidence_created"] += 1
             repos.audit.log(case_id, AuditEvent.EVIDENCE_CREATED, response.provider,
                             f"Evidência de {entity.type} '{entity.canonical_value}' via {response.provider}",
                             {"evidence_id": evidence.id, "entity_id": entity.id})
@@ -456,6 +617,9 @@ class InvestigationService:
                     state.pivots_scheduled += 1
                     frontier.append(Target(d.identifier, d.entity.id, d.entity.type, d.entity.canonical_value,
                                            d.entity.fingerprint, d.entity.depth))
+                    state.defer("PIVOT_CREATED", {
+                        "entity_id": d.entity.id, "type": d.entity.type.value, "value": d.entity.canonical_value,
+                        "depth": d.entity.depth, "priority": d.priority})
                     audit.log(case_id, AuditEvent.PIVOT_CREATED, "PivotEngine",
                               f"Pivô {d.entity.type.value} '{d.entity.canonical_value}' (depth {d.entity.depth})",
                               {"entity_id": d.entity.id, "source_entity_id": d.source_entity_id,
@@ -468,6 +632,7 @@ class InvestigationService:
                 self._budget(case_id, state, "max_pivots", f"Orçamento de pivôs ({limits.max_pivots}) atingido",
                              audit=audit)
         state.stats.update({f"pivot:{k}": v for k, v in counts.items()})
+        state.flush_events()
         return frontier
 
     # --- correlação e contradições ---------------------------------------------------------------
@@ -485,7 +650,19 @@ class InvestigationService:
             for ev in repos.evidence.list(case_id):
                 entity_evidence.setdefault(ev.entity_id, []).append(ev.id)
 
-            results = self.correlation.correlate(snapshots, rels, attributes, entity_evidence)
+            flags = {r.id: (r.meta or {}).get("flags", {}) for r in rows}
+            for image_id, reason in self.correlation.low_identity_images(snapshots, rels, flags).items():
+                row = repos.entities.get(image_id)
+                meta = dict(row.meta or {})
+                current = dict(meta.get("flags") or {})
+                if not current.get("low_identity_value"):
+                    current["low_identity_value"] = {"reason": reason, "source": "automatic"}
+                    meta["flags"] = current
+                    row.meta = meta
+                    flags[image_id] = current
+                    repos.audit.log(case_id, AuditEvent.ENTITY_MERGED, "CorrelationEngine",
+                                    f"Imagem marcada LOW_IDENTITY_VALUE: {reason}", {"entity_id": image_id})
+            results = self.correlation.correlate(snapshots, rels, attributes, entity_evidence, flags)
             stored = 0
             for res in results:
                 if res.level.value == "UNRELATED":

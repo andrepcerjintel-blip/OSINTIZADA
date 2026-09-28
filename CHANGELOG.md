@@ -2,6 +2,52 @@
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [0.4.0] — 2026-09-28 — Fase 4: resiliência, jobs persistentes e segurança
+
+### Adicionado
+- **Jobs persistentes** (`jobs`, `job_attempts`, `job_events`; migração `0002_jobs`), separados do Case.
+  Status `PENDING → QUEUED → RUNNING → COMPLETED | RETRYING | FAILED | CANCELLED | INTERRUPTED`.
+  A API só cria e enfileira: `POST /cases/{id}/investigate` → `202 {case_id, job_id, status: "QUEUED"}`.
+- **Fila RQ sobre Redis** (`infrastructure/queue.py`, `JSONSerializer`: sem pickle). A mensagem leva só o
+  `job_id`; todo estado fica no banco. Outbox simplificado: commit do Job como `PENDING`, publicação e só então
+  `QUEUED`. Se o Redis cair, o Job permanece `PENDING` e o reconciliador republica.
+- **Worker separado** (`osintizada worker`): claim atômico (`UPDATE … WHERE status IN (…)` +
+  `execution_token`), heartbeat do job e do worker, **lock distribuído por Case** (TTL + token, renovado no
+  heartbeat, nunca liberado por outro dono), checkpoints por rodada com retomada, cancelamento cooperativo.
+- **JobRecoveryService / reconciliador** (na subida da API e do worker, e periodicamente com lock próprio):
+  RUNNING sem heartbeat → `INTERRUPTED` → `RETRYING` (retoma do checkpoint) ou `FAILED`
+  `MAX_ATTEMPTS_EXCEEDED` (dead letter); `PENDING` antigos e `RETRYING` vencidos → fila; `QUEUED` sem
+  mensagem na fila → republicados. Nunca marca `COMPLETED`.
+- **Idempotência**: entrega duplicada é descartada pelo claim; resultado de worker que perdeu a posse é
+  descartado (heartbeat/finish/checkpoint condicionados ao token); consultas já concluídas no Case são
+  reaproveitadas (`ALREADY_EXECUTED`) em vez de repetidas.
+- **RedisCacheBackend** (JSON, TTL por provider, chave `osintizada:provider:<nome>:<parser>:<sha256>`);
+  Redis fora → degrada para sem cache, sem falhar a investigação.
+- **Endpoints**: `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE com `Last-Event-ID`), `POST /jobs/{id}/cancel`,
+  `POST /jobs/{id}/retry`, `GET /jobs/{id}/download`, `GET /cases/{id}/jobs`, `POST /cases/{id}/exports`
+  (job JSON/CSV/HTML), `GET /cases/{id}/timeline`, `POST /cases/{id}/entities/{eid}/flags`, `GET /metrics`
+  (Prometheus), `POST /providers/{name}/validate-credentials`; `/health` com api, database, redis, worker
+  (`ONLINE`/`STALE`/`OFFLINE`/`WORKER_UNAVAILABLE`), fila e contagem de jobs.
+- **SSRF com IP pinning** (anti DNS rebinding): resolução única, todos os IPs validados (tudo-ou-nada),
+  conexão no IP validado com `Host`/SNI do nome original, revalidação a cada redirect, política de portas
+  (80/443 por padrão), bloqueio de metadata cloud, IPv4 embutido em IPv6 (NAT64/6to4/Teredo/mapped),
+  credenciais em URL recusadas, política de proxy (`pin`/`deny`).
+- **Correlação visual**: SHA256 + pHash (DCT) + dHash; níveis `EXACT_IMAGE_MATCH`, `PERCEPTUAL_VERY_SIMILAR`,
+  `PERCEPTUAL_SIMILAR`; imagens genéricas `LOW_IDENTITY_VALUE` (manual, lista de hashes, reuso em ≥ 3 contas)
+  com peso reduzido. Avatar nunca gera `SAME_AS` sozinho. Avatar do Telegram baixado e armazenado por hash.
+- **Timeline** pelo momento do fato (`observed_at`), não da coleta; filtros por tipo, provider e período.
+- **Exports** JSON, CSV (zip, proteção contra injeção de fórmula) e HTML autocontido, gerados por job.
+- `validate_credentials()` e lista `missing` de variáveis por provider (Telegram/Search `NOT_CONFIGURED`).
+- Logs com `case_id`, `job_id` e `provider`; métricas compartilhadas entre processos via Redis.
+- Validação de subida (banco/migrações/Redis), `Dockerfile` e `docker-compose.yml` (api, worker, redis,
+  postgres, healthchecks, sem senhas no arquivo), `osintizada worker-status`, `osintizada reconcile`.
+
+### Alterado
+- Status do Case derivado dos Jobs (nunca de flag solta).
+- TTL do lock do Case segue `stale_after_seconds` por padrão (lock de worker morto expira junto com o
+  abandono do job).
+- SQLite em arquivo usa WAL + `busy_timeout` (API e worker em processos separados).
+
 ## [0.3.0] — 2026-09-28 — Fase 3: primeiro ciclo investigativo real
 
 ### Adicionado

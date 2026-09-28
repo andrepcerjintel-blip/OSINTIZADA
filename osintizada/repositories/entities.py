@@ -75,6 +75,17 @@ class EntityRepository(Repository):
     def count(self, case_id: str) -> int:
         return len(self.list(case_id))
 
+    def created_by_execution(self, case_id: str, execution_id: str | None, min_depth: int = 0) -> list[EntityRow]:
+        """Entidades com evidência produzida por uma SearchExecution (para retomada de pivôs)."""
+        if not execution_id:
+            return []
+        from osintizada.db.tables import EvidenceRow
+
+        ids = select(EvidenceRow.entity_id).where(EvidenceRow.case_id == case_id,
+                                                   EvidenceRow.search_execution_id == execution_id)
+        return list(self.session.scalars(select(EntityRow).where(EntityRow.id.in_(ids),
+                                                                 EntityRow.depth >= min_depth)))
+
     def add_attribute_observation(self, row: EntityRow, key: str, value, evidence_id: str, provider: str) -> None:
         """Atributos são append-only: cada valor observado mantém sua evidência (base de contradições)."""
         meta = dict(row.meta or {})

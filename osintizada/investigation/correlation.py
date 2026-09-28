@@ -17,6 +17,7 @@ from itertools import combinations
 from osintizada.config import Settings, get_settings
 from osintizada.core.canonical import handle_of
 from osintizada.core.enums import CorrelationLevel, EntityType, RelationType
+from osintizada.images.hashing import ImageMatchLevel, compare
 from osintizada.investigation.pivot import EntitySnapshot
 
 IDENTITY_TYPES = frozenset({EntityType.SOCIAL_ACCOUNT, EntityType.TELEGRAM_USER, EntityType.USERNAME,
@@ -96,7 +97,71 @@ class CorrelationEngine:
             return "same_telegram_id"
         if neighbor.type == EntityType.DOMAIN:
             return "same_domain"
+        if neighbor.type == EntityType.IMAGE:
+            return "same_exact_avatar"  # mesma entidade IMAGE = mesmo SHA256
         return None
+
+    def low_identity_images(self, entities: list[EntitySnapshot], relations: list[RelationView],
+                            flags: dict[str, dict] | None = None) -> dict[str, str]:
+        """IMAGE com baixo valor de identidade → motivo. Manual (flag), lista conhecida ou reuso amplo."""
+        flags = flags or {}
+        images = {e.id: e for e in entities if e.type == EntityType.IMAGE}
+        identity_ids = {e.id for e in entities if e.type in IDENTITY_TYPES
+                        or e.type in (EntityType.TELEGRAM_CHANNEL, EntityType.TELEGRAM_GROUP)}
+        users: dict[str, set[str]] = defaultdict(set)
+        for rel in relations:
+            if rel.target_id in images and rel.source_id in identity_ids:
+                users[rel.target_id].add(rel.source_id)
+        known = {h.lower() for h in self.settings.images.known_generic_sha256}
+        result: dict[str, str] = {}
+        for image_id, image in images.items():
+            flag = (flags.get(image_id) or {}).get("low_identity_value")
+            if flag:
+                result[image_id] = flag.get("reason", "marcada manualmente") if isinstance(flag, dict) else "manual"
+            elif image.canonical_value.removeprefix("sha256:") in known:
+                result[image_id] = "avatar genérico conhecido"
+            elif len(users[image_id]) >= self.settings.images.generic_reuse_threshold:
+                result[image_id] = f"reutilizada por {len(users[image_id])} contas neste Case"
+        return result
+
+    def _avatar_signals(self, entities, relations, attributes, low_identity) -> dict[tuple[str, str], list[Signal]]:
+        """Sinais perceptuais entre donos de imagens DIFERENTES mas visualmente semelhantes."""
+        cfg, weights = self.settings.images, self.cfg.weights
+        by_id = {e.id: e for e in entities}
+        owners: dict[str, dict[str, list[str]]] = defaultdict(dict)  # imagem → dono → evidências
+        for rel in relations:
+            target = by_id.get(rel.target_id)
+            source = by_id.get(rel.source_id)
+            if target is not None and source is not None and target.type == EntityType.IMAGE \
+                    and source.type != EntityType.IMAGE:
+                owners[target.id][source.id] = rel.evidence_ids
+        hashes = {}
+        for image_id in owners:
+            attrs = attributes.get(image_id, {})
+            ph = next((o["value"] for o in attrs.get("phash", [])), None)
+            dh = next((o["value"] for o in attrs.get("dhash", [])), None)
+            if ph and dh:
+                hashes[image_id] = {"phash": ph, "dhash": dh}
+        out: dict[tuple[str, str], list[Signal]] = defaultdict(list)
+        for img_a, img_b in combinations(sorted(hashes), 2):
+            match = compare(hashes[img_a], hashes[img_b], cfg.phash_very_similar, cfg.phash_similar, cfg.dhash_confirm)
+            if match.level == ImageMatchLevel.PERCEPTUAL_VERY_SIMILAR:
+                name = "very_similar_avatar"
+            elif match.level == ImageMatchLevel.PERCEPTUAL_SIMILAR:
+                name = "similar_avatar"
+            else:
+                continue
+            weight = weights.get(name, 0)
+            detail = f"{match.level.value} (pHash {match.phash_distance}, dHash {match.dhash_distance})"
+            if img_a in low_identity or img_b in low_identity:
+                weight = int(round(weight * self.cfg.low_identity_avatar_factor))
+                detail += " — LOW_IDENTITY_VALUE"
+            for owner_a, ev_a in owners[img_a].items():
+                for owner_b, ev_b in owners[img_b].items():
+                    if owner_a != owner_b:
+                        out[tuple(sorted((owner_a, owner_b)))].append(
+                            Signal(name, weight, detail, sorted(set(ev_a) | set(ev_b))))
+        return out
 
     def correlate(
         self,
@@ -104,11 +169,14 @@ class CorrelationEngine:
         relations: list[RelationView],
         attributes: dict[str, dict[str, list[dict]]] | None = None,
         entity_evidence: dict[str, list[str]] | None = None,
+        flags: dict[str, dict] | None = None,
     ) -> list[CorrelationResult]:
         attributes = attributes or {}
         entity_evidence = entity_evidence or {}
         by_id = {e.id: e for e in entities}
         weights = self.cfg.weights
+        low_identity = self.low_identity_images(entities, relations, flags)
+        avatar_signals = self._avatar_signals(entities, relations, attributes, low_identity)
 
         # Grafo não direcionado, ignorando relações criadas pela própria correlação.
         neighbors: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
@@ -133,6 +201,10 @@ class CorrelationEngine:
         pairs: set[tuple[str, str]] = set()
         for members in buckets.values():
             pairs.update(tuple(sorted(p)) for p in combinations(sorted(members), 2))
+        pairs.update(p for p in avatar_signals if all(by_id[x].type in IDENTITY_TYPES
+                                                        or by_id[x].type in (EntityType.TELEGRAM_CHANNEL,
+                                                                             EntityType.TELEGRAM_GROUP)
+                                                        for x in p))
 
         results: list[CorrelationResult] = []
         for a_id, b_id in sorted(pairs):
@@ -149,9 +221,20 @@ class CorrelationEngine:
                 if not name:
                     continue
                 evs = sorted(set(neighbors[a_id][nid]) | set(neighbors[b_id][nid]))
-                sig = positives.setdefault(name, Signal(name, weights.get(name, 0), "", []))
-                sig.detail = (sig.detail + "; " if sig.detail else "") + f"ambos ligados a {nb.type.value} {nb.canonical_value}"
+                weight = weights.get(name, 0)
+                label = f"ambos ligados a {nb.type.value} {nb.canonical_value}"
+                if name == "same_exact_avatar" and nid in low_identity:
+                    weight = int(round(weight * self.cfg.low_identity_avatar_factor))
+                    label += f" — LOW_IDENTITY_VALUE ({low_identity[nid]})"
+                sig = positives.setdefault(name, Signal(name, weight, "", []))
+                sig.weight = max(sig.weight, weight) if sig.detail else weight
+                sig.detail = (sig.detail + "; " if sig.detail else "") + label
                 sig.evidence_ids = sorted(set(sig.evidence_ids) | set(evs))
+            perceptual = avatar_signals.get((a_id, b_id), [])
+            if perceptual and "same_exact_avatar" not in positives:
+                # Um único sinal de avatar por par (o mais forte): evidência redundante não soma.
+                best = max(perceptual, key=lambda sg: (sg.weight, sg.name))
+                positives[best.name] = best
 
             ha, hb = handle_of(a.type, a.canonical_value), handle_of(b.type, b.canonical_value)
             if ha and ha == hb:

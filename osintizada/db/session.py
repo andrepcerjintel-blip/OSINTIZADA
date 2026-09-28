@@ -37,7 +37,8 @@ class Database:
         self.url = resolve_database_url(url)
         kwargs: dict = {"echo": echo, "future": True}
         if self.url.startswith("sqlite"):
-            kwargs["connect_args"] = {"check_same_thread": False}
+            # timeout = busy_timeout: escritas concorrentes (heartbeat × coleta) esperam em vez de falhar.
+            kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
             if self.url in ("sqlite://", "sqlite:///:memory:"):
                 kwargs["poolclass"] = StaticPool  # uma conexão compartilhada: necessária para :memory:
             else:
@@ -46,7 +47,8 @@ class Database:
                     Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
         self.engine: Engine = create_engine(self.url, **kwargs)
         if self.url.startswith("sqlite"):
-            event.listen(self.engine, "connect", _sqlite_pragmas)
+            in_memory = self.url in ("sqlite://", "sqlite:///:memory:")
+            event.listen(self.engine, "connect", _sqlite_pragmas if in_memory else _sqlite_file_pragmas)
         self._factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_all(self) -> None:
@@ -79,4 +81,14 @@ class Database:
 def _sqlite_pragmas(dbapi_connection, _record) -> None:  # pragma: no cover - trivial
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
+def _sqlite_file_pragmas(dbapi_connection, _record) -> None:  # pragma: no cover - trivial
+    """SQLite em arquivo: WAL permite leitores concorrentes (API/SSE) enquanto o worker escreve."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()

@@ -24,7 +24,11 @@ async def public_resolver(host):
 
 
 def http_runtime(handler) -> ProviderRuntime:
-    return ProviderRuntime(transport=httpx.MockTransport(handler), resolver=public_resolver, sleep=_no_sleep)
+    from tests.fixtures.environment import FakeClock
+
+    clock = FakeClock()
+    return ProviderRuntime(transport=httpx.MockTransport(handler), resolver=public_resolver, clock=clock,
+                           sleep=clock.sleep)
 
 
 def by(results, etype):

@@ -1,0 +1,94 @@
+# Stack: api + worker + redis + postgres.
+# Senhas NÃO ficam aqui: copie .env.example para .env (fora do Git) e defina
+# POSTGRES_PASSWORD, REDIS_PASSWORD e OSINTIZADA_API_TOKEN. Sem elas o compose recusa subir.
+#
+#   docker compose up -d --build
+#   docker compose up -d --scale worker=3     # vários workers (claim atômico + lock por Case)
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://osintizada:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/osintizada
+  REDIS_URL: redis://:${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}@redis:6379/0
+  OSINTIZADA_CONFIG: /app/config/osintizada.yaml
+  OSINTIZADA_AUTO_MIGRATE: "1"
+  # Providers opcionais (vazios → NOT_CONFIGURED, nunca simulados)
+  BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+  GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
+  GOOGLE_CSE_CX: ${GOOGLE_CSE_CX:-}
+  TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+  TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+  TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: osintizada
+      POSTGRES_USER: osintizada
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U osintizada -d osintizada"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # AOF reduz perda da fila em reinício; mesmo sem ela o reconciliador republica pelo banco.
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    environment:
+      <<: *app-env
+      OSINTIZADA_API_TOKEN: ${OSINTIZADA_API_TOKEN:?defina OSINTIZADA_API_TOKEN no .env}
+    command: ["osintizada", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - appdata:/app/data
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  worker:
+    build: .
+    environment: *app-env
+    command: ["osintizada", "worker"]
+    volumes:
+      - appdata:/app/data     # exports/artefatos compartilhados com a API
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      # Saudável = há ao menos um worker com heartbeat recente no Redis.
+      test: ["CMD", "osintizada", "worker-status", "--local", "--require-online"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+    # SIGTERM → o RQ termina o job atual (warm shutdown); se o tempo acabar, o reconciliador recupera.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  appdata:

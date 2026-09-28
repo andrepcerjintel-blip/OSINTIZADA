@@ -36,7 +36,42 @@ resilience:
   max_response_bytes: 5242880   # respostas maiores são recusadas
 
 network:
-  user_agent: "OSINTIZADA/0.3 (+investigation research tool)"
+  user_agent: "OSINTIZADA/0.4 (+investigation research tool)"
+  allowed_ports: [80, 443]      # portas aceitas em URLs não confiáveis
+  blocked_networks: []          # redes extras bloqueadas (CIDR)
+  proxy_policy: pin             # pin | deny
+
+redis:                          # URL somente via REDIS_URL (pode conter senha)
+  socket_timeout_seconds: 5
+
+cache:
+  backend: memory               # memory (por processo) | redis (compartilhado entre API e workers)
+  prefix: osintizada            # prefixo de TODAS as chaves Redis (cache, locks, heartbeats, métricas)
+
+jobs:
+  queue_name: osintizada
+  heartbeat_interval_seconds: 15
+  stale_after_seconds: 90       # heartbeat mais antigo → INTERRUPTED → RETRYING/FAILED
+  max_attempts: 3               # tentativas do JOB (≠ retry de provider)
+  retry_backoff_seconds: 30     # × 2^(tentativa-1)
+  pending_dispatch_after_seconds: 10    # PENDING não publicado → republica
+  queued_redispatch_after_seconds: 300  # QUEUED sem mensagem na fila → republica
+  case_lock_ttl_seconds: null   # null → igual a stale_after_seconds (mínimo: 2 heartbeats + 1 s)
+  case_lock_wait_seconds: 5     # espera pelo lock do Case antes de devolver o job (sem gastar tentativa)
+  reconcile_interval_seconds: 30
+  worker_heartbeat_interval_seconds: 10 # worker ONLINE se heartbeat ≤ 2× intervalo
+  reuse_executions_max_age_hours: 24    # consulta concluída no Case é reaproveitada (refresh=true força)
+  export_dir: data/exports
+  artifact_dir: data/artifacts
+
+images:
+  max_bytes: 5242880
+  max_pixels: 40000000          # proteção contra decompression bomb
+  phash_very_similar: 6         # Hamming (64 bits); também exige dHash ≤ dhash_confirm
+  phash_similar: 12
+  dhash_confirm: 12
+  generic_reuse_threshold: 3    # mesma imagem em ≥ N contas do Case → LOW_IDENTITY_VALUE
+  known_generic_sha256: []      # avatares padrão conhecidos
 
 providers:
   <nome.do.provider>:
@@ -114,6 +149,10 @@ correlation:
 | Variável | Uso |
 |---|---|
 | `DATABASE_URL` | conexão do banco |
+| `REDIS_URL` | Redis (fila, locks, cache, heartbeats). `rediss://:senha@host:6380/0` para TLS. Sem ela: jobs ficam `PENDING` (`QUEUE_UNAVAILABLE`) e `osintizada worker` se recusa a iniciar |
+| `OSINTIZADA_AUTO_MIGRATE` | `1` (padrão) aplica migrações na subida; `0` exige banco já migrado (falha com mensagem clara) |
+| `OSINTIZADA_TEST_DATABASE_URL` | só testes: roda `tests/test_jobs.py` contra PostgreSQL real (schema recriado) |
+| `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | só `docker-compose.yml` (obrigatórias; nunca versionadas) |
 | `OSINTIZADA_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
 | `BRAVE_SEARCH_API_KEY`, `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | buscadores |
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` | Telegram |
@@ -148,9 +187,18 @@ O backend padrão é em memória (`InMemoryTTLCache`); a interface `CacheBackend
 
 Todo acesso HTTP de provider passa por `SafeHTTPClient`:
 
-- somente `http`/`https`, sem credenciais embutidas na URL;
-- o host é resolvido e **todos** os IPs precisam ser públicos (bloqueia loopback, redes privadas,
-  `169.254.169.254`/metadados de nuvem, IPv4 mapeado em IPv6, `localhost`, `*.internal`);
+- somente `http`/`https`, sem credenciais embutidas na URL, porta em `network.allowed_ports`
+  (providers podem declarar outras);
+- o host é resolvido **uma vez** e **todos** os IPs precisam ser globais (bloqueia loopback, redes
+  privadas, CGNAT, link-local, multicast, reservados, metadados de nuvem `169.254.169.254` /
+  `fd00:ec2::254` / `100.100.100.200`, IPv4 embutido em IPv6 mapped/6to4/Teredo/NAT64, `localhost`,
+  `*.internal` e `network.blocked_networks`). Um único IP proibido recusa a URL inteira;
+- **IP pinning**: a conexão vai para o IP validado, com `Host` e SNI do nome original. Uma nova resolução
+  (DNS rebinding) não muda o destino;
 - redirecionamentos são seguidos manualmente e cada destino é revalidado (máx. 5);
+- proxy: com `pin` (padrão) o CONNECT vai ao IP validado. Com `proxy_policy: deny`, ou quando o proxy de
+  ambiente resolve DNS por conta própria (`socks5h`, detectado automaticamente), URLs fora de
+  `trusted_hosts` são recusadas, porque o pinning não pode ser garantido;
 - limite de tamanho de resposta e timeout obrigatórios;
-- `trusted_hosts` do provider (endpoints fixos de API declarados no código) dispensam apenas a resolução DNS.
+- `trusted_hosts` do provider (endpoints fixos de API declarados no código, ex.: RIRs do RDAP) dispensam
+  apenas a validação de IP; porta e esquema continuam validados.

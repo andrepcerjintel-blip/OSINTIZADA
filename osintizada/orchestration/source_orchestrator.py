@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +41,17 @@ from osintizada.providers.base import (
     load_builtin_providers,
 )
 from osintizada.resilience import ProviderRuntime
+
+
+@dataclass
+class RunHooks:
+    """Ganchos opcionais de uma rodada (cancelamento, memória de execuções, eventos)."""
+
+    is_cancelled: Callable[[], bool] | None = None
+    # (provider, identificador, consulta) → id de execução anterior reaproveitável, ou None
+    already_executed: Callable[[str, NormalizedIdentifier, str], str | None] | None = None
+    on_start: Callable[[str, NormalizedIdentifier, str | None], None] | None = None
+    on_finish: Callable[[ProviderResponse], None] | None = None
 
 
 class ProviderSelection(BaseModel):
@@ -197,6 +209,7 @@ class SourceOrchestrator:
         call_limit: int | None = None,
         cost_limit: int | None = None,
         deadline: float | None = None,
+        hooks: RunHooks | None = None,
     ) -> SearchRun:
         """Executa UMA rodada de coleta para os identificadores informados.
 
@@ -281,10 +294,26 @@ class SourceOrchestrator:
                 if self._cancel.is_set():
                     return _skipped(task.provider.name, task.identifier, "Pesquisa cancelada pelo investigador",
                                     ProviderStatus.CANCELLED, query=query_text, code="CANCELLED")
+                if hooks and hooks.is_cancelled and hooks.is_cancelled():
+                    return _skipped(task.provider.name, task.identifier, "Pesquisa cancelada pelo investigador",
+                                    ProviderStatus.CANCELLED, query=query_text, code="CANCELLED")
                 if deadline is not None and time.monotonic() >= deadline:
                     return _skipped(task.provider.name, task.identifier, "Tempo máximo da investigação atingido",
                                     query=query_text, code="BUDGET_EXHAUSTED")
+                if hooks and hooks.already_executed:
+                    previous = hooks.already_executed(task.provider.name, task.identifier,
+                                                      query_text or task.identifier.value)
+                    if previous:
+                        skipped = _skipped(task.provider.name, task.identifier,
+                                           "Consulta já executada com sucesso neste Case (memória investigativa)",
+                                           query=query_text, code="ALREADY_EXECUTED")
+                        skipped.metadata["previous_execution_id"] = previous
+                        return skipped
+                if hooks and hooks.on_start:
+                    hooks.on_start(task.provider.name, task.identifier, query_text)
                 response = await task.provider.search(task.identifier, query_text)
+                if hooks and hooks.on_finish:
+                    hooks.on_finish(response)
                 response.metadata["identifier_value"] = task.identifier.value
                 if task.query is not None:
                     response.metadata.update(planned_query_id=task.query.id, reason=task.query.reason,

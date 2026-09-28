@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from osintizada.core.secrets import SecretRedactingFilter, sanitize_payload
 
 _case_id: ContextVar[str | None] = ContextVar("osintizada_case_id", default=None)
+_job_id: ContextVar[str | None] = ContextVar("osintizada_job_id", default=None)
 _STANDARD = set(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message", "asctime"}
 
 
@@ -36,10 +37,26 @@ def case_context(case_id: str | None) -> Iterator[None]:
         _case_id.reset(token)
 
 
+@contextmanager
+def job_context(job_id: str | None, case_id: str | None = None) -> Iterator[None]:
+    job_token = _job_id.set(job_id)
+    case_token = _case_id.set(case_id) if case_id else None
+    try:
+        yield
+    finally:
+        _job_id.reset(job_token)
+        if case_token is not None:
+            _case_id.reset(case_token)
+
+
 class _CaseFilter(logging.Filter):
+    """Injeta case_id/job_id do contexto em todo log (correlação de investigação)."""
+
     def filter(self, record: logging.LogRecord) -> bool:
         if getattr(record, "case_id", None) is None:
             record.case_id = _case_id.get()
+        if getattr(record, "job_id", None) is None:
+            record.job_id = _job_id.get()
         return True
 
 

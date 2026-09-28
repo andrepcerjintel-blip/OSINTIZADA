@@ -49,6 +49,7 @@ from osintizada.core.models import (
 from osintizada.core.secrets import get_secret, mask_secret, sanitize
 from osintizada.net.http_client import HTTPResult, SafeHTTPClient, parse_retry_after
 from osintizada.net.ssrf import UnsafeURLError
+from osintizada.observability.metrics import metrics
 from osintizada.resilience import (
     ProviderRuntime,
     TransientError,
@@ -161,6 +162,8 @@ class BaseProvider(ABC):
     default_cache_ttl_seconds: ClassVar[int | None] = None
     # Limite de tamanho de resposta específico (ex.: crt.sh devolve JSON grande).
     max_response_bytes: ClassVar[int | None] = None
+    # Portas extras que este provider precisa acessar em URLs não confiáveis (padrão: só 80/443).
+    allowed_ports: ClassVar[tuple[int, ...]] = ()
     # Hosts fixos de API declarados no código: dispensam resolução DNS no SSRF check.
     trusted_hosts: ClassVar[tuple[str, ...]] = ()
     # Providers que executam consultas textuais planejadas (search engines).
@@ -263,10 +266,12 @@ class BaseProvider(ABC):
 
         rt = self.runtime
         key = cache_key(self.name, self.parser_version, identifier.type.value, identifier.value, query,
-                        self.cache_params())
-        if self.cache_ttl > 0 and (cached := rt.cache.get(key)) is not None:
+                        self.cache_params(), prefix=self.settings.cache.prefix)
+        if self.cache_ttl > 0 and (cached := self._cache_get(key)) is not None:
             rt.count("cache_hits")
             return self._from_cache(response, cached)
+        if self.cache_ttl > 0:
+            rt.count("cache_misses")
 
         if (cooldown := rt.rate_limiter.cooldown_remaining(self.name)) > 0:
             response.metadata["retry_after"] = round(cooldown, 1)
@@ -323,7 +328,7 @@ class BaseProvider(ABC):
         status = ProviderStatus.SUCCESS if response.results else ProviderStatus.NO_RESULTS
         self._finish(response, status)
         if self.cache_ttl > 0:
-            rt.cache.set(key, response.model_copy(deep=True), self.cache_ttl)
+            self._cache_set(key, response)
         rt.count("results", len(response.results))
         return response
 
@@ -352,6 +357,30 @@ class BaseProvider(ABC):
             base.detail = detail
         return base
 
+    def missing_secrets(self) -> list[str]:
+        """Nomes (nunca valores) das credenciais ausentes."""
+        return [v for v in self.required_secrets if not get_secret(v)]
+
+    async def validate_credentials(self) -> dict:
+        """Validação MANUAL/healthcheck das credenciais (pode consumir quota; nunca por consulta)."""
+        base = {"provider": self.name, "configured": self.is_configured(), "missing": self.missing_secrets(),
+                "requires_auth": self.requires_auth}
+        if not base["configured"]:
+            return base | {"status": "NOT_CONFIGURED", "valid": None, "detail": self.not_configured_reason()}
+        if not self.requires_auth:
+            return base | {"status": "NOT_REQUIRED", "valid": None, "detail": "Fonte pública sem credencial"}
+        try:
+            detail = await asyncio.wait_for(self._validate_credentials(), timeout=self.timeout)
+        except AuthRequiredError as exc:
+            return base | {"status": "INVALID", "valid": False, "detail": sanitize(str(exc))}
+        except Exception as exc:  # noqa: BLE001 - indisponível ≠ inválida
+            return base | {"status": "UNAVAILABLE", "valid": None, "detail": sanitize(f"{type(exc).__name__}: {exc}")}
+        return base | {"status": "VALID", "valid": True, "detail": detail if isinstance(detail, str) else "ok"}
+
+    async def _validate_credentials(self) -> bool | str | None:
+        """Padrão: o healthcheck do provider exercita a credencial."""
+        return await self._healthcheck()
+
     # --- a implementar -------------------------------------------------------------
 
     @abstractmethod
@@ -377,6 +406,9 @@ class BaseProvider(ABC):
             trusted_hosts=self.trusted_hosts,
             resolver=self.runtime.resolver,
             transport=self.runtime.transport,
+            allowed_ports=set(self.settings.network.allowed_ports) | set(self.allowed_ports),
+            blocked_networks=self.settings.network.blocked_networks,
+            proxy_policy=self.settings.network.proxy_policy,
         )
 
     async def fetch(self, client: SafeHTTPClient, method: str, url: str, *,
@@ -455,6 +487,32 @@ class BaseProvider(ABC):
         return await retry_async(attempt, max_retries=res.max_retries, base=res.backoff_base_seconds,
                                  maximum=res.backoff_max_seconds, on_retry=note_retry, sleep=self.runtime.sleep)
 
+    def _cache_get(self, key: str) -> ProviderResponse | None:
+        """Lê e VALIDA o payload; entrada corrompida é descartada (e o provider executa de novo)."""
+        try:
+            payload = self.runtime.cache.get(key)
+        except Exception as exc:  # backend indisponível: segue sem cache
+            _log.warning("cache indisponível na leitura", extra={"provider": self.name, "error": str(exc)})
+            return None
+        if payload is None:
+            return None
+        try:
+            return ProviderResponse.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001 - payload inválido/corrompido
+            _log.warning("payload de cache inválido descartado", extra={"provider": self.name, "error": str(exc)[:200]})
+            self.runtime.count("cache_corrupted")
+            try:
+                self.runtime.cache.delete(key)
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
+    def _cache_set(self, key: str, response: ProviderResponse) -> None:
+        try:
+            self.runtime.cache.set(key, response.model_dump(mode="json"), self.cache_ttl)
+        except Exception as exc:  # noqa: BLE001 - falha de cache nunca derruba a coleta
+            _log.warning("cache indisponível na escrita", extra={"provider": self.name, "error": str(exc)})
+
     def _from_cache(self, response: ProviderResponse, cached: ProviderResponse) -> ProviderResponse:
         response.status = cached.status
         response.results = [r.model_copy(deep=True) for r in cached.results]
@@ -471,6 +529,11 @@ class BaseProvider(ABC):
             "provider": self.name, "operation": "search", "status": status.value, "error_code": code,
             "duration_ms": round(response.duration_ms or 0, 1), "results": len(response.results),
             "cache_hit": bool(response.metadata.get("cache_hit"))})
+        metrics.inc("provider_calls_total", provider=self.name, status=status.value)
+        if status in _FAILURE_STATUSES:
+            metrics.inc("provider_errors_total", provider=self.name, code=code or status.value)
+        if response.duration_ms is not None and status not in (ProviderStatus.SKIPPED, ProviderStatus.NOT_CONFIGURED):
+            metrics.observe("provider_latency_seconds", response.duration_ms / 1000, provider=self.name)
         if code:
             response.error_code = code
         if error:

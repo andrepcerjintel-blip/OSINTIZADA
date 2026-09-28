@@ -95,7 +95,62 @@ class DatabaseSettings(BaseModel):
 
 
 class NetworkSettings(BaseModel):
-    user_agent: str = "OSINTIZADA/0.3 (+investigation research tool)"
+    user_agent: str = "OSINTIZADA/0.4 (+investigation research tool)"
+    # Portas permitidas para URLs não confiáveis (providers podem declarar outras).
+    allowed_ports: list[int] = Field(default_factory=lambda: [80, 443])
+    # Redes adicionais proibidas (além de todo endereço não-global da stdlib).
+    blocked_networks: list[str] = Field(default_factory=list)
+    # "pin": conecta no IP validado (inclusive via proxy HTTP CONNECT);
+    # "deny": com proxy que resolve DNS (socks5h), recusa URLs arbitrárias.
+    proxy_policy: str = "pin"
+
+
+class RedisSettings(BaseModel):
+    # REDIS_URL (env) tem precedência. Senha/TLS vão na URL (rediss://:senha@host:6380/0) — nunca no YAML.
+    url: str | None = None
+    socket_timeout_seconds: float = 5.0
+
+
+class CacheSettings(BaseModel):
+    backend: str = "memory"  # memory | redis
+    prefix: str = "osintizada"
+    max_memory_entries: int = 10_000
+
+
+class JobSettings(BaseModel):
+    queue_name: str = "osintizada"
+    heartbeat_interval_seconds: float = 15.0   # JOB_HEARTBEAT_INTERVAL
+    stale_after_seconds: float = 90.0          # heartbeat mais antigo que isso → INTERRUPTED
+    max_attempts: int = 3                      # tentativas do JOB (≠ retry de provider)
+    retry_backoff_seconds: float = 30.0        # atraso antes de reexecutar um job que falhou
+    pending_dispatch_after_seconds: float = 10.0  # PENDING mais antigo que isso é reenviado à fila
+    queued_redispatch_after_seconds: float = 300.0  # QUEUED sem mensagem na fila é reenviado
+    # TTL do lock do Case. None → igual a stale_after_seconds: o lock de um worker morto expira no mesmo
+    # momento em que o job é considerado abandonado (o lock nunca é liberado por quem não é dono).
+    case_lock_ttl_seconds: float | None = None
+    case_lock_wait_seconds: float = 5.0
+    reconcile_interval_seconds: float = 30.0
+    worker_heartbeat_interval_seconds: float = 10.0
+    reuse_executions_max_age_hours: float = 24.0  # SearchExecution SUCCESS reaproveitada dentro do Case
+    export_dir: str = "data/exports"
+    artifact_dir: str = "data/artifacts"   # avatares/imagens (armazenamento por hash)
+
+    @property
+    def effective_case_lock_ttl(self) -> float:
+        ttl = self.case_lock_ttl_seconds or self.stale_after_seconds
+        # Precisa sobreviver a pelo menos 2 heartbeats (a renovação acontece a cada heartbeat).
+        return max(ttl, self.heartbeat_interval_seconds * 2 + 1)
+
+
+class ImageSettings(BaseModel):
+    max_bytes: int = 5 * 1024 * 1024
+    max_pixels: int = 40_000_000
+    # Distância de Hamming (64 bits). Calibrado em testes (recompressão/resize ≤ 4; imagens distintas ≥ 20).
+    phash_very_similar: int = 6
+    phash_similar: int = 12
+    dhash_confirm: int = 12       # dHash precisa concordar para "very_similar"
+    generic_reuse_threshold: int = 3  # imagem usada por ≥ N contas no case → LOW_IDENTITY_VALUE
+    known_generic_sha256: list[str] = Field(default_factory=list)  # avatares padrão conhecidos
 
 
 class TorSettings(BaseModel):
@@ -162,8 +217,11 @@ class CorrelationSettings(BaseModel):
     weights: dict[str, int] = Field(default_factory=lambda: {
         "same_telegram_id": 60, "same_phone": 50, "same_email": 45, "same_username_rare": 25,
         "same_username_common": 10, "same_domain": 15, "same_name": 5, "same_location": 5,
+        "same_exact_avatar": 20, "very_similar_avatar": 12, "similar_avatar": 6,
         "conflicting_country": -15, "conflicting_location": -10,
     })
+    # Multiplicador aplicado a sinais de avatar com LOW_IDENTITY_VALUE (logos, memes, avatar padrão…).
+    low_identity_avatar_factor: float = 0.25
     strong_signals: list[str] = Field(default_factory=lambda: ["same_telegram_id", "same_phone", "same_email"])
     same_as_threshold: int = 80      # exige também ao menos um sinal forte
     possible_threshold: int = 35
@@ -182,6 +240,10 @@ class Settings(BaseModel):
     network: NetworkSettings = Field(default_factory=NetworkSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     pivots: PivotSettings = Field(default_factory=PivotSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+    cache: CacheSettings = Field(default_factory=CacheSettings)
+    jobs: JobSettings = Field(default_factory=JobSettings)
+    images: ImageSettings = Field(default_factory=ImageSettings)
     correlation: CorrelationSettings = Field(default_factory=CorrelationSettings)
 
     def mode(self, mode: SearchMode) -> ModeProfile:

@@ -21,10 +21,10 @@ dist/
 htmlcov/
 
 # Dados de investigação / evidências locais
-data/
-cases/
-evidence_store/
-exports/
+/data/
+/cases/
+/evidence_store/
+/exports/
 *.sqlite
 *.db
 

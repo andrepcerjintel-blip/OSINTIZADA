@@ -24,8 +24,11 @@ from osintizada.core.enums import (
     SourceAccess,
     SourceTier,
 )
-from osintizada.core.models import NormalizedIdentifier, ProviderResult, utcnow
+from osintizada.core.models import EntityRef, NormalizedIdentifier, ProviderResult, utcnow
 from osintizada.core.secrets import get_secret
+from osintizada.images.hashing import ImageError, analyze_image
+from osintizada.images.results import image_result
+from osintizada.images.store import ArtifactStore
 from osintizada.providers.base import (
     APIProvider,
     AuthRequiredError,
@@ -206,7 +209,35 @@ class TelegramProvider(APIProvider):
                     await result
         if entity is None:
             return []
-        return self.entity_to_results(entity, identifier, queried_handle)
+        results = self.entity_to_results(entity, identifier, queried_handle)
+        if avatar := await self._avatar(client, entity, results[0] if results else None):
+            results.append(avatar)
+        return results
+
+    async def _avatar(self, client, entity, main: ProviderResult | None) -> ProviderResult | None:
+        """Foto de perfil pública (se houver): bytes originais no ArtifactStore, hashes na evidência."""
+        download = getattr(client, "download_profile_photo", None)
+        if download is None or main is None or not getattr(entity, "photo", None):
+            return None
+        try:
+            data = await download(entity, file=bytes)
+        except Exception as exc:  # noqa: BLE001 - avatar é complementar; nunca derruba a consulta
+            self.runtime.count("telegram_avatar_errors")
+            _ = exc
+            return None
+        if not data:
+            return None
+        cfg = self.settings.images
+        try:
+            fp = analyze_image(bytes(data), max_bytes=cfg.max_bytes, max_pixels=cfg.max_pixels)
+        except ImageError:
+            return None
+        ArtifactStore(self.settings.jobs.artifact_dir).put(bytes(data))
+        photo_id = getattr(getattr(entity, "photo", None), "photo_id", None)
+        return image_result(fp, owner=EntityRef(type=main.type, value=main.value), source_url=None,
+                            source_name=self.display_name, observed_at=utcnow(), role="avatar",
+                            classification=self.classification,
+                            extra_raw={"telegram_photo_id": photo_id, "telegram_id": getattr(entity, "id", None)})
 
     def entity_to_results(self, entity: Any, identifier: NormalizedIdentifier,
                           queried_handle: str | None) -> list[ProviderResult]:

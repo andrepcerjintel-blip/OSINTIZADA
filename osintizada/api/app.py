@@ -1,34 +1,37 @@
 """API FastAPI do OSINTIZADA.
 
-Rotas: cases, investigate (execução em background), entidades, evidências, relações,
-buscas, auditoria, pivôs, correlações, conflitos, providers e health.
+A API NÃO executa investigação: ela valida, grava um Job no banco, publica na fila (Redis/RQ)
+e responde imediatamente. Workers separados (``osintizada worker``) executam os Jobs. Reiniciar
+a API não afeta investigações em andamento; os resultados permanecem no banco.
 
 Segurança:
-  * ``OSINTIZADA_API_TOKEN`` definido → exige ``Authorization: Bearer <token>`` em todas as rotas
-    (exceto ``/health``). Sem token, sirva apenas em 127.0.0.1 (padrão do ``osintizada serve``).
-  * respostas nunca incluem secrets: credenciais aparecem mascaradas; raw_data já é sanitizado.
-
-A investigação roda em background no próprio processo (BackgroundTasks). A camada
-``InvestigationService.start/run`` já separa agendamento de execução, pronta para um
-worker/fila (Celery/RQ/Dramatiq) sem mudar os contratos da API.
+  * ``OSINTIZADA_API_TOKEN`` definido → exige ``Authorization: Bearer <token>`` (exceto ``/health``);
+  * respostas nunca incluem secrets (credenciais mascaradas; só NOMES das variáveis ausentes).
 """
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from osintizada import __version__
-from osintizada.core.enums import EntityType
+from osintizada.bootstrap import database_status
+from osintizada.core.enums import TERMINAL_JOB_STATUSES, AuditEvent, EntityType, JobStatus, JobType
 from osintizada.db import Database
+from osintizada.infrastructure.redis_client import redis_status
 from osintizada.investigation.service import InvestigationRequest, InvestigationService
+from osintizada.jobs.heartbeat import workers_status
+from osintizada.jobs.service import EXPORT_FORMATS, JobService
+from osintizada.observability.metrics import metrics
 from osintizada.repositories import (
     AuditRepository,
     CaseRepository,
@@ -37,11 +40,13 @@ from osintizada.repositories import (
     EntityRepository,
     EvidenceRepository,
     InvestigationRepository,
+    JobRepository,
     PivotRepository,
     RelationshipRepository,
     SearchRepository,
     row_to_dict,
 )
+from osintizada.timeline.service import TimelineService
 
 log = logging.getLogger("osintizada.api")
 
@@ -55,17 +60,71 @@ class CaseCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-def create_app(service: InvestigationService | None = None) -> FastAPI:
+class ExportCreate(BaseModel):
+    format: str = Field(default="json", description="json | csv | html")
+
+
+class EntityFlags(BaseModel):
+    low_identity_value: bool
+    reason: str = Field(default="marcada pelo investigador", max_length=500)
+
+
+def build_default_services() -> tuple[InvestigationService, JobService, Any]:
+    """Montagem de produção: banco (migrações), Redis opcional, cache configurado, fila RQ."""
+    from osintizada.bootstrap import validate_database
+    from osintizada.config import get_settings
+    from osintizada.infrastructure.queue import RQJobQueue
+    from osintizada.infrastructure.redis_cache import build_cache
+    from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis
+    from osintizada.orchestration.source_orchestrator import SourceOrchestrator
+    from osintizada.resilience import ProviderRuntime
+
+    settings = get_settings()
+    db = Database()
+    validate_database(db, auto_migrate=os.environ.get("OSINTIZADA_AUTO_MIGRATE", "1") != "0")
+    try:
+        redis = create_redis(settings=settings)
+        redis.ping()
+    except RedisNotConfigured:
+        redis = None
+        log.warning("REDIS_URL não configurada: jobs ficarão PENDING (QUEUE_UNAVAILABLE)")
+    except Exception as exc:  # noqa: BLE001 - API sobe; health mostra Redis indisponível
+        log.warning("Redis indisponível na inicialização", extra={"error": type(exc).__name__})
+    runtime = ProviderRuntime(cache=build_cache(settings, redis) if redis is not None or
+                              settings.cache.backend != "redis" else None)
+    orchestrator = SourceOrchestrator(settings=settings, runtime=runtime)
+    service = InvestigationService(db, orchestrator, settings)
+    queue = RQJobQueue(redis, settings.jobs.queue_name) if redis is not None else None
+    return service, JobService(db, settings, queue, redis), redis
+
+
+def create_app(service: InvestigationService | None = None, jobs: JobService | None = None,
+               redis: Any = None, reconcile_on_startup: bool = True) -> FastAPI:
     if service is None:
-        db = Database()
-        if os.environ.get("OSINTIZADA_AUTO_MIGRATE", "1") != "0":
-            db.upgrade()
-        service = InvestigationService(db)
+        service, jobs, redis = build_default_services()
+    if jobs is None:
+        jobs = JobService(service.db, service.settings, None, redis)
+    redis = redis if redis is not None else jobs.redis
+    db = service.db
+    settings = service.settings
+    if redis is not None:  # contadores agregados entre API e workers
+        metrics.bind_redis(redis, settings.cache.prefix)
 
     app = FastAPI(title="OSINTIZADA", version=__version__,
                   description="OSINT Investigation Orchestrator — toda conclusão rastreável até a evidência.")
-    app.state.service = service
-    db = service.db
+    app.state.service, app.state.jobs, app.state.redis = service, jobs, redis
+
+    @app.on_event("startup")
+    def reconcile_at_startup() -> None:
+        # Reconciliação cuidadosa: decide por heartbeat/fila/checkpoint, nunca "zera" Cases RUNNING.
+        if not reconcile_on_startup or jobs.queue is None:
+            return
+        from osintizada.jobs.recovery import JobRecoveryService
+
+        try:
+            JobRecoveryService(db, settings, jobs, jobs.queue, redis).reconcile_with_lock()
+        except Exception:  # noqa: BLE001
+            log.exception("reconciliação na inicialização falhou")
 
     def require_token(request: Request) -> None:
         expected = os.environ.get("OSINTIZADA_API_TOKEN")
@@ -83,11 +142,41 @@ def create_app(service: InvestigationService | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Case não encontrado")
         return case
 
+    def describe_or_404(job_id: str) -> dict:
+        try:
+            return jobs.describe(job_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # --- saúde / métricas ----------------------------------------------------------------------
+
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": __version__}
+        database = database_status(db)
+        redis_info = redis_status(redis)
+        worker = workers_status(redis, settings.cache.prefix)
+        queue: dict[str, Any] = {"status": "QUEUE_UNAVAILABLE"}
+        if jobs.queue is not None and redis_info["status"] == "ok":
+            try:
+                queue = {"status": "ok", "size": jobs.queue.size()}
+            except Exception as exc:  # noqa: BLE001
+                queue = {"status": "UNAVAILABLE", "error": type(exc).__name__}
+        with db.session() as s:
+            job_counts = JobRepository(s).count_by_status()
+        ok = (database["status"] == "ok" and redis_info["status"] == "ok" and worker["status"] == "ONLINE")
+        return {"status": "ok" if ok else "degraded", "api": {"status": "ok", "version": __version__},
+                "database": database, "redis": redis_info, "worker": worker, "queue": queue, "jobs": job_counts}
 
-    # --- cases -----------------------------------------------------------------------------
+    @app.get("/metrics", dependencies=auth)
+    def prometheus_metrics() -> PlainTextResponse:
+        with db.session() as s:
+            counts = JobRepository(s).count_by_status()
+        gauges = {f'jobs{{status="{status.value}"}}': counts.get(status.value, 0) for status in JobStatus}
+        worker = workers_status(redis, settings.cache.prefix)
+        gauges["workers_online"] = sum(1 for w in worker["workers"] if w["status"] == "ONLINE")
+        return PlainTextResponse(metrics.render(gauges), media_type="text/plain; version=0.0.4")
+
+    # --- cases ----------------------------------------------------------------------------------
 
     @app.post("/cases", status_code=201, dependencies=auth)
     def create_case(body: CaseCreate) -> dict:
@@ -107,6 +196,8 @@ def create_app(service: InvestigationService | None = None) -> FastAPI:
             data = row_to_dict(case)
             data["inputs"] = [row_to_dict(i) for i in CaseRepository(s).inputs(case_id)]
             data["investigations"] = [row_to_dict(i) for i in InvestigationRepository(s).list(case_id)]
+            data["jobs"] = [{k: v for k, v in row_to_dict(j).items() if k not in ("checkpoint", "execution_token")}
+                            for j in JobRepository(s).list(case_id)]
             data["counts"] = {
                 "entities": len(EntityRepository(s).list(case_id)),
                 "evidence": len(EvidenceRepository(s).list(case_id)),
@@ -116,22 +207,108 @@ def create_app(service: InvestigationService | None = None) -> FastAPI:
             return data
 
     @app.post("/cases/{case_id}/investigate", status_code=202, dependencies=auth)
-    async def investigate(case_id: str, body: InvestigationRequest, background: BackgroundTasks) -> dict:
+    def investigate(case_id: str, body: InvestigationRequest) -> dict:
+        """Cria e enfileira um Job. NÃO executa a investigação neste processo."""
         try:
-            investigation_id = service.start(case_id, body)
+            job = jobs.submit_investigation(case_id, body)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _submission(job)
+
+    @app.get("/cases/{case_id}/jobs", dependencies=auth)
+    def case_jobs(case_id: str) -> list[dict]:
+        with db.session() as s:
+            get_case_or_404(s, case_id)
+            ids = [j.id for j in JobRepository(s).list(case_id)]
+        return [describe_or_404(i) for i in ids]
+
+    @app.post("/cases/{case_id}/exports", status_code=202, dependencies=auth)
+    def create_export(case_id: str, body: ExportCreate) -> dict:
+        if body.format.lower() not in EXPORT_FORMATS:
+            raise HTTPException(status_code=422, detail=f"Formato deve ser um de {EXPORT_FORMATS}")
+        try:
+            job = jobs.submit_export(case_id, body.format)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _submission(job)
+
+    def _submission(job: dict) -> dict:
+        warnings = []
+        if job.get("dispatch") != "QUEUED":
+            warnings.append("QUEUE_UNAVAILABLE")
+        if workers_status(redis, settings.cache.prefix)["status"] != "ONLINE":
+            warnings.append("WORKER_UNAVAILABLE")
+        return {"case_id": job["case_id"], "job_id": job["id"], "job_type": job["job_type"],
+                "status": job["status"], "warnings": warnings}
+
+    # --- jobs -------------------------------------------------------------------------------------
+
+    @app.get("/jobs/{job_id}", dependencies=auth)
+    def get_job(job_id: str) -> dict:
+        return describe_or_404(job_id)
+
+    @app.post("/jobs/{job_id}/cancel", dependencies=auth)
+    def cancel_job(job_id: str) -> dict:
+        try:
+            return jobs.cancel(job_id)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        async def job() -> None:
-            try:
-                await service.run(case_id, investigation_id, body)
-            except Exception:  # já registrado como CASE_FAILED pelo serviço
-                log.warning("investigação terminou com falha", extra={"case_id": case_id})
+    @app.post("/jobs/{job_id}/retry", status_code=202, dependencies=auth)
+    def retry_job(job_id: str) -> dict:
+        try:
+            return jobs.retry(job_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        background.add_task(job)
-        return {"case_id": case_id, "investigation_id": investigation_id, "status": "RUNNING"}
+    @app.get("/jobs/{job_id}/events", dependencies=auth)
+    async def job_events(job_id: str, request: Request, poll: float = Query(0.5, ge=0.05, le=10)) -> StreamingResponse:
+        """Server-Sent Events a partir da tabela persistente ``job_events`` (retomável via Last-Event-ID)."""
+        describe_or_404(job_id)
+        start_after = int(request.headers.get("last-event-id") or 0)
+
+        async def stream():
+            last, idle = start_after, 0.0
+            while True:
+                if await request.is_disconnected():
+                    break
+                with db.session() as s:
+                    repo = JobRepository(s)
+                    rows = [(e.id, e.event_type, e.timestamp.isoformat(), e.data)
+                            for e in repo.events_after(job_id, last)]
+                    status = repo.get(job_id).status
+                for event_id, kind, ts, data in rows:
+                    last = event_id
+                    payload = json.dumps({"type": kind, "timestamp": ts, **(data or {})}, ensure_ascii=False)
+                    yield f"id: {event_id}\nevent: {kind}\ndata: {payload}\n\n"
+                if not rows and JobStatus(status) in TERMINAL_JOB_STATUSES:
+                    yield f"event: end\ndata: {json.dumps({'status': status})}\n\n"
+                    break
+                await asyncio.sleep(poll)
+                idle = 0.0 if rows else idle + poll
+                if idle >= 15:
+                    idle = 0.0
+                    yield ": keepalive\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/jobs/{job_id}/download", dependencies=auth)
+    def download_export(job_id: str) -> FileResponse:
+        job = describe_or_404(job_id)
+        if job["job_type"] != JobType.EXPORT.value or job["status"] != JobStatus.COMPLETED.value:
+            raise HTTPException(status_code=409, detail="Export ainda não concluído")
+        root = Path(settings.jobs.export_dir).resolve()
+        path = Path(job["result"].get("path", "")).resolve()
+        if root not in path.parents or not path.is_file():  # nunca servir fora do diretório de exports
+            raise HTTPException(status_code=404, detail="Arquivo de export não encontrado")
+        return FileResponse(path, media_type=job["result"].get("mime"), filename=job["result"].get("filename"))
 
     # --- dados do case ------------------------------------------------------------------------
 
@@ -161,6 +338,40 @@ def create_app(service: InvestigationService | None = None) -> FastAPI:
                 "relationships": related,
                 "investigative_path": _path(s, case_id, entity_id),
             }
+
+    @app.post("/cases/{case_id}/entities/{entity_id}/flags", dependencies=auth)
+    def set_entity_flags(case_id: str, entity_id: str, body: EntityFlags) -> dict:
+        """Marca/desmarca LOW_IDENTITY_VALUE (ex.: logo, meme, avatar padrão). Vale na próxima correlação."""
+        with db.session() as s:
+            get_case_or_404(s, case_id)
+            entity = EntityRepository(s).get(entity_id)
+            if entity is None or entity.case_id != case_id:
+                raise HTTPException(status_code=404, detail="Entidade não encontrada")
+            meta = dict(entity.meta or {})
+            flags = dict(meta.get("flags") or {})
+            if body.low_identity_value:
+                flags["low_identity_value"] = {"reason": body.reason, "source": "manual"}
+            else:
+                flags.pop("low_identity_value", None)
+            meta["flags"] = flags
+            entity.meta = meta
+            AuditRepository(s).log(case_id, AuditEvent.ENTITY_MERGED, "API",
+                                   f"LOW_IDENTITY_VALUE={body.low_identity_value} em {entity.type}",
+                                   {"entity_id": entity_id, "reason": body.reason})
+            return row_to_dict(entity)
+
+    @app.get("/cases/{case_id}/timeline", dependencies=auth)
+    def timeline(case_id: str, entity_type: EntityType | None = None, provider: str | None = None,
+                 date_from: str | None = None, date_to: str | None = None,
+                 include_collection_only: bool = False) -> list[dict]:
+        with db.session() as s:
+            get_case_or_404(s, case_id)
+        try:
+            events = TimelineService(db).build(case_id, entity_type.value if entity_type else None, provider,
+                                               date_from, date_to, include_collection_only)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Data inválida: {exc}") from exc
+        return [e.model_dump() for e in events]
 
     @app.get("/cases/{case_id}/evidence", dependencies=auth)
     def evidence(case_id: str, entity_id: str | None = None) -> list[dict]:
@@ -218,11 +429,20 @@ def create_app(service: InvestigationService | None = None) -> FastAPI:
             "enabled": p.enabled, "configured": p.is_configured(),
             "status": ("CONFIGURED" if p.is_configured() else "NOT_CONFIGURED") if p.enabled else "DISABLED",
             "not_configured_reason": None if p.is_configured() else p.not_configured_reason(),
+            "missing": p.missing_secrets(),  # só NOMES de variáveis, nunca valores
             "requires_auth": p.requires_auth, "credentials": p.masked_credentials(),
             "supports": "all" if p.consumes_planned_queries else sorted(t.value for t in p.supported_identifiers),
             "rate_limit_per_minute": p.rate_limit_per_minute, "concurrency": p.max_concurrency,
             "cache_ttl_seconds": p.cache_ttl,
         } for p in provider_list()]
+
+    @app.post("/providers/{name}/validate-credentials", dependencies=auth)
+    async def validate_credentials(name: str) -> dict:
+        """Validação manual (pode consumir quota do serviço externo)."""
+        provider = next((p for p in provider_list() if p.name == name), None)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Provider não encontrado")
+        return await provider.validate_credentials()
 
     @app.get("/providers/health", dependencies=auth)
     async def providers_health() -> list[dict]:
@@ -233,14 +453,15 @@ def create_app(service: InvestigationService | None = None) -> FastAPI:
             last_error = runtime.last_errors.get(provider.name)
             if isinstance(check, BaseException):
                 out.append({"name": provider.name, "configured": provider.is_configured(), "status": "UNAVAILABLE",
-                            "last_error": last_error, "latency_ms": None, "detail": str(check)[:300]})
+                            "last_error": last_error, "latency_ms": None, "detail": str(check)[:300],
+                            "missing": provider.missing_secrets()})
                 continue
             status = HEALTH_STATUS.get(check.status, "DEGRADED")
             if status == "HEALTHY" and (last_error or check.circuit != "closed"):
                 status = "DEGRADED"  # responde agora, mas falhou recentemente / circuito não fechado
             out.append({"name": provider.name, "configured": check.configured, "status": status,
                         "last_error": last_error, "latency_ms": check.latency_ms, "detail": check.detail,
-                        "circuit": check.circuit})
+                        "circuit": check.circuit, "missing": provider.missing_secrets()})
         return out
 
     @app.exception_handler(ValueError)

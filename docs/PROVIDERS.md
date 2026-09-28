@@ -97,8 +97,19 @@ estiver lá. Nada mais no sistema precisa mudar.
 Implemente `_healthcheck()` com uma chamada leve (ex.: endpoint de quota). O `healthcheck()` público mede
 latência, trata falhas e expõe credenciais apenas mascaradas (`sk-****37ad`).
 
-Rate limit, cache, retry e circuit breaker são aplicados pelo `BaseProvider`; o provider não precisa
-implementar nada disso. Para HTTP, use sempre `self.http_client()` + `self.fetch()`.
+## Credenciais
+
+- `missing_secrets()` lista os **nomes** das variáveis ausentes (nunca valores). `/providers` e
+  `/providers/health` mostram `NOT_CONFIGURED` com `missing: ["TELEGRAM_SESSION", …]`.
+- `await validate_credentials()` → `NOT_CONFIGURED` (faltam variáveis), `NOT_REQUIRED` (provider sem chave),
+  `VALID`, `INVALID` (autenticação recusada) ou `UNAVAILABLE` (serviço fora). Por padrão usa
+  `_healthcheck()`; sobrescreva `_validate_credentials()` para uma checagem mais barata. Exposto em
+  `POST /providers/{name}/validate-credentials`.
+- Nunca inserir chave fictícia nem simular resposta: sem credencial, o provider não executa.
+
+Rate limit, cache (memória ou Redis compartilhado, JSON com TTL por provider), retry e circuit breaker são
+aplicados pelo `BaseProvider`; o provider não precisa implementar nada disso. Portas além de 80/443 exigem
+`allowed_ports` declarado no provider. Para HTTP, use sempre `self.http_client()` + `self.fetch()`.
 
 ## Search engines
 
@@ -139,7 +150,7 @@ Nomes de pessoa e localizações exigem análise semântica e ficarão na camada
 | `infra.rdap` | API / 1 | ipv4, ipv6, cidr, asn, domain | — | bloco de rede, ASN de origem, organização registrante, registrar, nameservers delegados, contatos de abuso (dados redigidos são ignorados) |
 | `infra.crtsh` | API / 2 | domain | — | subdomínios passivos via Certificate Transparency (wildcards normalizados, fora do domínio descartados), emails em certificados |
 | `archive.wayback` | API / 5 | domain, subdomain, url | — | URLs e hosts históricos, capturas de páginas. **Sempre `HISTORICAL_DATA`** |
-| `social.telegram` | API / 2 | telegram_username, telegram_id, telegram_link, username | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` (+ pacote `telethon`) | Telegram ID (estável) + username (mutável, `USES_USERNAME` datado), nome exibido, tipo de peer |
+| `social.telegram` | API / 2 | telegram_username, telegram_id, telegram_link, username | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` (+ pacote `telethon`) | Telegram ID (estável) + username (mutável, `USES_USERNAME` datado), nome exibido, tipo de peer, avatar (`IMAGE` com SHA256/pHash/dHash; bytes no ArtifactStore) |
 | `search.brave` | API (search) / 3 | todos (consultas textuais) | `BRAVE_SEARCH_API_KEY` | páginas + entidades co-ocorrentes; operadores: aspas, site, filetype, intitle, -, OR |
 | `search.google_cse` | API (search) / 3 | todos (consultas textuais) | `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | idem; todos os operadores; acesso restrito pelo Google a contas existentes |
 | `local.identifier_analysis` | local / 1 | email, url, telegram_link, subdomain, hostname | — | derivações estruturais (DERIVED) |

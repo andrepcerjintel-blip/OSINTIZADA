@@ -83,7 +83,10 @@ class RDAPProvider(APIProvider):
     tier = SourceTier.TIER_1
     supported_identifiers = frozenset({IdentifierType.IPV4, IdentifierType.IPV6, IdentifierType.ASN,
                                        IdentifierType.DOMAIN, IdentifierType.CIDR})
-    trusted_hosts = ("rdap.org",)
+    # Bootstrap + servidores RDAP oficiais (RIRs e registros): endpoints fixos e conhecidos.
+    trusted_hosts = ("rdap.org", "rdap.arin.net", "rdap.db.ripe.net", "rdap.lacnic.net", "rdap.apnic.net",
+                     "rdap.afrinic.net", "rdap.registro.br", "rdap.verisign.com", "rdap.publicinterestregistry.org",
+                     "rdap.nic.br", "rdap.iana.org")
     default_requests_per_second = 1
     default_concurrency = 4
     default_cache_ttl_seconds = 86400

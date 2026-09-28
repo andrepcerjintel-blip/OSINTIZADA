@@ -10,7 +10,9 @@ Comandos:
   providers [--health]       status/configuração dos providers
   investigate <input>...     investigação persistente em Case (pivôs, correlação, auditoria)
   cases / case <id>          lista Cases / mostra resultado de um Case
-  serve                      inicia a API HTTP (FastAPI/uvicorn)
+  serve                      inicia a API HTTP (FastAPI/uvicorn) — só enfileira jobs
+  worker [--burst]           processo worker (fila Redis/RQ, heartbeat, reconciliador)
+  reconcile                  executa uma reconciliação de jobs (recupera abandonados, republica)
   db upgrade                 aplica migrações (Alembic)
 """
 
@@ -295,6 +297,62 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_worker(args: argparse.Namespace) -> int:
+    from osintizada.bootstrap import StartupError, validate_database, validate_redis
+    from osintizada.db import Database
+    from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis
+    from osintizada.jobs.worker import build_worker_context, run_worker
+    from osintizada.observability import configure_logging
+
+    configure_logging(args.log_level or "INFO")
+    try:
+        redis = create_redis()
+        validate_redis(redis)
+        db = Database()
+        validate_database(db, auto_migrate=os.environ.get("OSINTIZADA_AUTO_MIGRATE", "1") != "0")
+    except (RedisNotConfigured, StartupError) as exc:
+        # Sem Redis não existe fila persistente: o worker se recusa a fingir que funciona.
+        print(f"erro: {exc}", file=sys.stderr)
+        return 2
+    ctx = build_worker_context(redis=redis, db=db)
+    ctx.queue_redis = create_redis(blocking=True)  # escuta da fila sem timeout de leitura
+    run_worker(ctx=ctx, burst=args.burst)
+    return 0
+
+
+def cmd_worker_status(args: argparse.Namespace) -> int:
+    """Status dos workers pelo heartbeat no Redis (usado também como healthcheck do container)."""
+    import socket
+
+    from osintizada.config import get_settings
+    from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis
+    from osintizada.jobs.heartbeat import workers_status
+
+    try:
+        redis = create_redis()
+    except RedisNotConfigured:
+        redis = None
+    status = workers_status(redis, get_settings().cache.prefix)
+    if args.local:  # só os workers deste host/container (worker_id começa pelo hostname)
+        host = socket.gethostname() + "-"
+        status["workers"] = [w for w in status["workers"] if str(w.get("worker_id", "")).startswith(host)]
+        online = any(w["status"] == "ONLINE" for w in status["workers"])
+        status["status"] = "ONLINE" if online else ("STALE" if status["workers"] else "OFFLINE")
+    _dump(status)
+    return 0 if (not args.require_online or status["status"] == "ONLINE") else 1
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    from osintizada.db import Database
+    from osintizada.jobs.recovery import JobRecoveryService
+    from osintizada.jobs.worker import build_worker_context
+
+    ctx = build_worker_context(db=Database())
+    report = JobRecoveryService(ctx.db, ctx.settings, ctx.jobs, ctx.queue, ctx.redis).reconcile()
+    _dump(report)
+    return 0
+
+
 def cmd_db(args: argparse.Namespace) -> int:
     from osintizada.db import Database
 
@@ -376,6 +434,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("worker", help="Inicia um worker de jobs (requer REDIS_URL)")
+    p.add_argument("--burst", action="store_true", help="Processa a fila até esvaziar e encerra")
+    p.set_defaults(func=cmd_worker)
+
+    p = sub.add_parser("worker-status", help="Workers ONLINE/STALE/OFFLINE (heartbeat no Redis)")
+    p.add_argument("--local", action="store_true", help="Somente workers deste host/container")
+    p.add_argument("--require-online", action="store_true", help="Código de saída 1 se não houver worker ONLINE")
+    p.set_defaults(func=cmd_worker_status)
+
+    p = sub.add_parser("reconcile", help="Reconcilia jobs (abandonados, PENDING, QUEUED perdidos)")
+    p.set_defaults(func=cmd_reconcile)
 
     p = sub.add_parser("db", help="Banco de dados")
     p.add_argument("action", choices=["upgrade"])

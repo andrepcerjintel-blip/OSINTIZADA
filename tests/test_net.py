@@ -43,7 +43,7 @@ async def test_blocks_unsafe_urls(url):
 
 
 async def test_blocks_hostname_resolving_to_private():
-    with pytest.raises(UnsafeURLError, match="não público"):
+    with pytest.raises(UnsafeURLError, match="resolve para"):
         await validate_url("http://evil.example/", resolver=resolver_for({"evil.example": [PUBLIC, "10.1.1.1"]}))
 
 
@@ -67,7 +67,7 @@ async def test_unresolvable_host_is_rejected():
 
 async def test_redirect_to_private_is_blocked():
     def handler(request):
-        if request.url.host == "public.example":
+        if request.headers["host"] == "public.example":
             return httpx.Response(302, headers={"location": "http://internal.example/secret"})
         return httpx.Response(200, text="segredo")
 

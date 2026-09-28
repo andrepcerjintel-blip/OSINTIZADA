@@ -331,6 +331,16 @@ class AuditEvent(StrEnum):
     CORRELATION_CREATED = "CORRELATION_CREATED"
     CONFLICT_DETECTED = "CONFLICT_DETECTED"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+    JOB_CREATED = "JOB_CREATED"
+    JOB_QUEUED = "JOB_QUEUED"
+    JOB_STARTED = "JOB_STARTED"
+    JOB_COMPLETED = "JOB_COMPLETED"
+    JOB_FAILED = "JOB_FAILED"
+    JOB_CANCELLED = "JOB_CANCELLED"
+    JOB_INTERRUPTED = "JOB_INTERRUPTED"
+    JOB_RETRY_SCHEDULED = "JOB_RETRY_SCHEDULED"
+    JOB_RECOVERED = "JOB_RECOVERED"
+    EXPORT_CREATED = "EXPORT_CREATED"
 
 
 class PivotStatus(StrEnum):
@@ -359,3 +369,44 @@ CLASSIFICATION_TO_SOURCE_TYPE: dict[DataClassification, SourceType] = {
     DataClassification.MANUAL: SourceType.MANUAL,
     DataClassification.DERIVED: SourceType.DERIVED,
 }
+
+
+# --- Jobs (execução) ------------------------------------------------------------------
+
+
+class JobStatus(StrEnum):
+    PENDING = "PENDING"          # gravado no banco, ainda não confirmado na fila
+    QUEUED = "QUEUED"            # publicação na fila confirmada
+    RUNNING = "RUNNING"
+    RETRYING = "RETRYING"        # aguardando nova tentativa (next_attempt_at)
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"            # terminal: excedeu tentativas ou erro não recuperável (dead letter)
+    CANCELLED = "CANCELLED"
+    INTERRUPTED = "INTERRUPTED"  # heartbeat expirou (worker morreu); reconciliador decide o próximo passo
+
+
+ACTIVE_JOB_STATUSES = frozenset({JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.RETRYING})
+TERMINAL_JOB_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED})
+CLAIMABLE_JOB_STATUSES = frozenset({JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RETRYING, JobStatus.INTERRUPTED})
+
+
+class JobType(StrEnum):
+    INVESTIGATION = "INVESTIGATION"
+    EXPORT = "EXPORT"
+
+
+class JobEventType(StrEnum):
+    JOB_CREATED = "JOB_CREATED"
+    JOB_QUEUED = "JOB_QUEUED"
+    JOB_STARTED = "JOB_STARTED"
+    JOB_PROGRESS = "JOB_PROGRESS"
+    JOB_CHECKPOINT = "JOB_CHECKPOINT"
+    PROVIDER_STARTED = "PROVIDER_STARTED"
+    PROVIDER_FINISHED = "PROVIDER_FINISHED"
+    ENTITY_CREATED = "ENTITY_CREATED"
+    PIVOT_CREATED = "PIVOT_CREATED"
+    JOB_COMPLETED = "JOB_COMPLETED"
+    JOB_FAILED = "JOB_FAILED"
+    JOB_RETRY_SCHEDULED = "JOB_RETRY_SCHEDULED"
+    JOB_CANCELLED = "JOB_CANCELLED"
+    JOB_INTERRUPTED = "JOB_INTERRUPTED"

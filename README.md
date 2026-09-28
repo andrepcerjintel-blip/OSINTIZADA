@@ -10,26 +10,27 @@ tudo com auditoria.
 > **Princípio:** toda conclusão deve ser rastreável até a evidência que a originou.
 > **Código produz evidência. IA interpreta evidência.**
 
-## Estado atual (v0.3.0)
+## Estado atual (v0.4.0)
 
 | Componente | Estado |
 |---|---|
 | Identifier Engine, normalização, Public Suffix List oficial | ✅ |
 | Case, seeds, entidades, evidências, relações, buscas, audit log, pivôs, correlações, conflitos (SQLite/PostgreSQL + Alembic) | ✅ |
+| **Jobs persistentes**: fila RQ/Redis, worker separado, heartbeat, lock por Case, checkpoints, retomada, cancelamento, dead letter | ✅ |
+| Redis como coordenação efêmera: fila, locks, cache compartilhado, heartbeats, progresso, métricas (o banco é a fonte da verdade) | ✅ |
 | Resiliência: rate limit (antes da requisição), retry/backoff, circuit breaker, cache, concorrência global e por provider | ✅ |
-| **DNS** (A/AAAA/MX/NS/TXT/CNAME/PTR + IP→ASN Team Cymru) | ✅ sem chave |
-| **RDAP** (IP, ASN, domínio) | ✅ sem chave |
-| **Certificate Transparency** (crt.sh) | ✅ sem chave |
-| **Internet Archive / Wayback** (sempre dado histórico) | ✅ sem chave |
-| Search: Brave, Google Programmable Search | ✅ exigem chave |
-| Telegram (Telethon, sessão legítima) | ✅ exige credenciais (senão `NOT_CONFIGURED`) |
-| Pivot Engine (prioridade, profundidade, orçamentos, anti-loop) | ✅ |
-| Correlation Engine (determinístico, explicável) + contradições | ✅ inicial |
-| API FastAPI + CLI + logs JSON estruturados | ✅ |
-| UI, timeline, export, imagens, Tor, Credilink | ⏳ ver [roadmap](docs/ARCHITECTURE.md#9-roadmap) |
+| SSRF com IP pinning (anti DNS rebinding), revalidação de redirect, política de portas e proxy | ✅ |
+| **DNS**, **RDAP**, **Certificate Transparency**, **Wayback** | ✅ sem chave |
+| Search: Brave, Google Programmable Search | ✅ exigem chave (senão `NOT_CONFIGURED` + variáveis faltantes) |
+| Telegram (Telethon, sessão legítima; avatar com hash) | ✅ exige credenciais (senão `NOT_CONFIGURED`) |
+| Pivot Engine, Correlation Engine (inclui avatar SHA256/pHash/dHash) + contradições | ✅ |
+| Timeline (momento do fato) e exports JSON/CSV/HTML | ✅ |
+| API FastAPI (SSE, `/health`, `/metrics`) + CLI + logs JSON com `case_id`/`job_id` | ✅ |
+| UI, Tor, Credilink, GitHub, Brasil OSINT | ⏳ ver [roadmap](docs/ARCHITECTURE.md#9-roadmap) |
 
 Nenhum resultado é simulado. Provider sem credencial aparece como `NOT_CONFIGURED`, falha aparece como
-`FAILED`/`TIMEOUT`/`RATE_LIMITED` com código, e ausência de resultado aparece como `EMPTY`.
+`FAILED`/`TIMEOUT`/`RATE_LIMITED` com código, e ausência de resultado aparece como `EMPTY`. Sem Redis a API
+não finge ter fila: o Job fica `PENDING` com o aviso `QUEUE_UNAVAILABLE`; sem worker, `WORKER_UNAVAILABLE`.
 
 ## Instalação
 
@@ -38,6 +39,14 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                 # + ".[telegram]" e/ou ".[postgres]" se for usar
 cp .env.example .env                    # opcional; .env nunca vai para o Git
 osintizada db upgrade                   # cria/atualiza o banco (SQLite em data/ por padrão)
+```
+
+### Docker (api + worker + redis + postgres)
+
+```bash
+cp .env.example .env    # defina POSTGRES_PASSWORD, REDIS_PASSWORD e OSINTIZADA_API_TOKEN (o compose exige)
+docker compose up -d --build
+docker compose up -d --scale worker=3
 ```
 
 ## Investigação (CLI)
@@ -55,10 +64,12 @@ osintizada providers --health           # status das integrações (pode consumi
 
 Ferramentas auxiliares (sem persistência): `detect`, `plan`, `raw`, `run`, `search`, `extract`.
 
-## API
+## API e worker
 
 ```bash
-osintizada serve                        # http://127.0.0.1:8000/docs
+export REDIS_URL=redis://127.0.0.1:6379/0
+osintizada serve                        # http://127.0.0.1:8000/docs (só cria e enfileira jobs)
+osintizada worker                       # executa os jobs; rode quantos quiser
 # fora de localhost é obrigatório: OSINTIZADA_API_TOKEN=... osintizada serve --host 0.0.0.0
 ```
 
@@ -66,28 +77,39 @@ osintizada serve                        # http://127.0.0.1:8000/docs
 curl -X POST localhost:8000/cases -H 'content-type: application/json' -d '{"name": "Caso 1"}'
 curl -X POST localhost:8000/cases/<id>/investigate -H 'content-type: application/json' \
      -d '{"inputs": ["example.com"], "mode": "deep", "max_depth": 2}'
-# → {"case_id": "...", "investigation_id": "...", "status": "RUNNING"}
+# → 202 {"case_id": "...", "job_id": "...", "status": "QUEUED", "warnings": []}
+curl -N localhost:8000/jobs/<job_id>/events   # progresso ao vivo (SSE)
 ```
 
 | Rota | Conteúdo |
 |---|---|
+| `GET /health`, `GET /metrics` | api, database, redis, worker (`ONLINE`/`STALE`/`OFFLINE`), fila; métricas Prometheus |
 | `POST /cases`, `GET /cases`, `GET /cases/{id}` | Cases (com seeds, execuções e contagens) |
-| `POST /cases/{id}/investigate` | inicia investigação (background) |
-| `GET /cases/{id}/entities[?type=]` | entidades com nº de evidências |
-| `GET /cases/{id}/entities/{entity_id}` | evidências, relações e **"como chegamos aqui?"** |
+| `POST /cases/{id}/investigate` | cria e enfileira um Job de investigação |
+| `GET /cases/{id}/jobs`, `GET /jobs/{id}` | status, estágio, progresso, tentativas, erro |
+| `GET /jobs/{id}/events` | SSE (retoma com `Last-Event-ID`) |
+| `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry` | cancelamento cooperativo; retry manual a partir do checkpoint |
+| `POST /cases/{id}/exports`, `GET /jobs/{id}/download` | export JSON/CSV/HTML como job |
+| `GET /cases/{id}/timeline` | eventos pelo momento do fato (`entity_type`, `provider`, `date_from`, `date_to`) |
+| `GET /cases/{id}/entities[?type=]`, `/entities/{entity_id}` | entidades, evidências, relações e **"como chegamos aqui?"** |
+| `POST /cases/{id}/entities/{entity_id}/flags` | marca imagem como `LOW_IDENTITY_VALUE` |
 | `GET /cases/{id}/evidence`, `/relationships`, `/searches`, `/audit` | proveniência completa |
 | `GET /cases/{id}/pivots`, `/correlations`, `/conflicts` | decisões de pivô, scores explicáveis, contradições |
-| `GET /providers`, `GET /providers/health` | integrações (credenciais mascaradas), HEALTHY/DEGRADED/UNAVAILABLE/NOT_CONFIGURED |
+| `GET /providers`, `/providers/health`, `POST /providers/{name}/validate-credentials` | integrações (variáveis faltantes, nunca valores) |
+
+CLI: `osintizada worker [--burst]`, `osintizada worker-status [--local] [--require-online]`, `osintizada reconcile`.
 
 ## Testes
 
 ```bash
-pytest          # 297 testes; providers externos testados com respostas simuladas (sem internet)
+pytest          # 400 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
+# mesmos testes de jobs contra PostgreSQL real (banco descartável — o schema é recriado):
+OSINTIZADA_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/test_jobs.py
 ```
 
 ## Documentação
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): auditoria, fluxo, modelo de dados, gap analysis e roadmap
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): fluxo, jobs e recuperação, Redis, SSRF, modelo de dados, roadmap
 - [docs/PROVIDERS.md](docs/PROVIDERS.md): contrato, providers existentes e como criar um novo
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): modos, orçamentos, pivôs, correlação, banco e secrets
 - [CHANGELOG.md](CHANGELOG.md)

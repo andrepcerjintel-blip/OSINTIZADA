@@ -40,6 +40,19 @@ class SearchRepository(Repository):
         return list(self.session.scalars(select(SearchExecutionRow).where(SearchExecutionRow.case_id == case_id)
                                          .order_by(SearchExecutionRow.started_at)))
 
+    def find_reusable(self, case_id: str, provider: str, identifier_type: str, identifier_value: str,
+                      query: str, since) -> str | None:
+        """Execução SUCCESS/EMPTY recente da mesma (case, provider, identificador, consulta)."""
+        stmt = (select(SearchExecutionRow.id)
+                .where(SearchExecutionRow.case_id == case_id, SearchExecutionRow.provider == provider,
+                       SearchExecutionRow.identifier_type == identifier_type,
+                       SearchExecutionRow.identifier_value == identifier_value,
+                       SearchExecutionRow.query == query,
+                       SearchExecutionRow.status.in_(["SUCCESS", "EMPTY"]),
+                       SearchExecutionRow.finished_at >= since)
+                .order_by(SearchExecutionRow.finished_at.desc()).limit(1))
+        return self.session.scalar(stmt)
+
     def count_executed(self, case_id: str, investigation_id: str) -> int:
         """Chamadas efetivamente feitas (exclui SKIPPED/NOT_CONFIGURED e respostas de cache)."""
         stmt = select(func.count()).select_from(SearchExecutionRow).where(

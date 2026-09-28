@@ -46,7 +46,44 @@ resilience:
   max_response_bytes: 5242880
 
 network:
-  user_agent: "OSINTIZADA/0.3 (+investigation research tool)"
+  user_agent: "OSINTIZADA/0.4 (+investigation research tool)"
+  allowed_ports: [80, 443]      # portas para URLs não confiáveis (SSRF)
+  blocked_networks: []          # redes extras bloqueadas (além de todo IP não-global)
+  proxy_policy: pin             # pin | deny (com proxy socks5h que resolve DNS)
+
+# Redis = camada de coordenação EFÊMERA (fila, locks, cache, heartbeats, progresso ao vivo).
+# O banco é a fonte da verdade. A URL (com senha/TLS) vem de REDIS_URL — nunca daqui.
+redis:
+  socket_timeout_seconds: 5
+
+cache:
+  backend: memory               # memory | redis (redis: cache compartilhado entre API e workers)
+  prefix: osintizada
+
+jobs:
+  queue_name: osintizada
+  heartbeat_interval_seconds: 15
+  stale_after_seconds: 90       # RUNNING sem heartbeat além disso → INTERRUPTED → RETRYING/FAILED
+  max_attempts: 3
+  retry_backoff_seconds: 30     # multiplicado por 2^(tentativa-1)
+  pending_dispatch_after_seconds: 10
+  queued_redispatch_after_seconds: 300
+  # case_lock_ttl_seconds: omitido → igual a stale_after_seconds
+  case_lock_wait_seconds: 5
+  reconcile_interval_seconds: 30
+  worker_heartbeat_interval_seconds: 10
+  reuse_executions_max_age_hours: 24
+  export_dir: data/exports
+  artifact_dir: data/artifacts
+
+images:
+  max_bytes: 5242880
+  max_pixels: 40000000
+  phash_very_similar: 6         # Hamming ≤ 6 (+ dHash ≤ 12) → PERCEPTUAL_VERY_SIMILAR
+  phash_similar: 12             # Hamming ≤ 12 → PERCEPTUAL_SIMILAR
+  dhash_confirm: 12
+  generic_reuse_threshold: 3    # mesma imagem em ≥ 3 contas → LOW_IDENTITY_VALUE
+  known_generic_sha256: []
 
 # Overrides por provider (nome = BaseProvider.name). Nomes curtos aceitos: concurrency, cache_ttl.
 # Os valores abaixo repetem os padrões declarados em cada provider, para referência.
@@ -101,4 +138,6 @@ correlation:
   same_as_threshold: 80
   possible_threshold: 35
   weak_threshold: 10
-  # weights: {same_telegram_id: 60, same_phone: 50, same_email: 45, same_username_rare: 25, ...}
+  # weights: {same_telegram_id: 60, same_phone: 50, same_email: 45, same_username_rare: 25,
+  #           same_exact_avatar: 20, very_similar_avatar: 12, similar_avatar: 6, ...}
+  low_identity_avatar_factor: 0.25   # avatar genérico vale 25% do peso; avatar sozinho nunca gera SAME_AS

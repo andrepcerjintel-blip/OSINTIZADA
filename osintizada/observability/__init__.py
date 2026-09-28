@@ -6,6 +6,7 @@ from osintizada.observability.logging import (
     configure_logging,
     current_case_id,
     get_logger,
+    job_context,
 )
 
-__all__ = ["JsonFormatter", "case_context", "configure_logging", "current_case_id", "get_logger"]
+__all__ = ["JsonFormatter", "case_context", "configure_logging", "current_case_id", "get_logger", "job_context"]
