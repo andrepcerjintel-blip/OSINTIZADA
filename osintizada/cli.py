@@ -8,6 +8,10 @@ Comandos:
   search "<consulta>"        executa RAW SEARCH nos mecanismos configurados
   extract [texto|--file]     extrai entidades de texto livre (offline)
   providers [--health]       status/configuração dos providers
+  investigate <input>...     investigação persistente em Case (pivôs, correlação, auditoria)
+  cases / case <id>          lista Cases / mostra resultado de um Case
+  serve                      inicia a API HTTP (FastAPI/uvicorn)
+  db upgrade                 aplica migrações (Alembic)
 """
 
 from __future__ import annotations
@@ -199,9 +203,111 @@ def cmd_providers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _service():
+    from osintizada.db import Database
+    from osintizada.investigation.service import InvestigationService
+
+    db = Database()
+    db.upgrade()
+    return InvestigationService(db)
+
+
+def cmd_investigate(args: argparse.Namespace) -> int:
+    from osintizada.investigation.service import InputSpec, InvestigationRequest
+
+    service = _service()
+    inputs = [InputSpec(value=v, type=IdentifierType(args.type) if args.type else None) for v in args.input]
+    request = InvestigationRequest(inputs=inputs, mode=SearchMode(args.mode), max_depth=args.max_depth,
+                                   max_entities=args.max_entities, max_pivots=args.max_pivots,
+                                   providers=args.providers or None, blocked_values=args.block or [])
+    case_id = args.case or service.create_case(args.name or f"Investigação: {', '.join(args.input)[:150]}")
+    summary = asyncio.run(service.investigate(case_id, request))
+    if args.json:
+        _dump({"case_id": case_id, "summary": summary})
+        return 0
+    print(f"CASE {case_id}")
+    _print_case(service, case_id)
+    print(f"\nResumo: profundidade {summary['depth_reached']}, {summary['provider_calls']} chamada(s), "
+          f"{summary['entities_total']} entidade(s), {summary['pivots_scheduled']} pivô(s), "
+          f"{summary['correlations']} correlação(ões), {summary['conflicts']} conflito(s)")
+    if summary["budget_exhausted"]:
+        print("BUDGET_EXHAUSTED: " + ", ".join(summary["budget_exhausted"]))
+    return 0
+
+
+def _print_case(service, case_id: str) -> None:
+    from osintizada.repositories import EntityRepository, EvidenceRepository, RelationshipRepository, SearchRepository
+
+    with service.db.session() as s:
+        entities = {e.id: e for e in EntityRepository(s).list(case_id)}
+        ev_count: dict[str, int] = {}
+        for ev in EvidenceRepository(s).list(case_id):
+            ev_count[ev.entity_id] = ev_count.get(ev.entity_id, 0) + 1
+        print("\nENTIDADES:")
+        for e in entities.values():
+            tag = "[SEED]" if e.origin == "SEED" else f"[d{e.depth}]"
+            print(f"  {tag:<7} {e.type:<16} {e.display_value or e.canonical_value}  ({ev_count.get(e.id, 0)} evid.)")
+        print("\nRELAÇÕES:")
+        for r in RelationshipRepository(s).list(case_id):
+            src, tgt = entities.get(r.source_entity_id), entities.get(r.target_entity_id)
+            if src and tgt:
+                print(f"  {src.canonical_value} —{r.relationship_type}→ {tgt.canonical_value}")
+        print("\nBUSCAS:")
+        for ex in SearchRepository(s).list(case_id):
+            if ex.status in ("SKIPPED",):
+                continue
+            extra = f" [{ex.error_code}]" if ex.error_code else ""
+            cache = " (cache)" if ex.cache_hit else ""
+            print(f"  d{ex.depth} {ex.provider:<22} {ex.status:<15} {ex.result_count:>3}  {ex.identifier_value or ex.query}"
+                  f"{cache}{extra}")
+
+
+def cmd_cases(args: argparse.Namespace) -> int:
+    from osintizada.repositories import CaseRepository, row_to_dict
+
+    service = _service()
+    with service.db.session() as s:
+        rows = [row_to_dict(c) for c in CaseRepository(s).list()]
+    if args.json:
+        _dump(rows)
+        return 0
+    for c in rows:
+        print(f"{c['id']}  {c['status']:<10} {c['created_at'][:19]}  {c['name']}")
+    return 0
+
+
+def cmd_case(args: argparse.Namespace) -> int:
+    service = _service()
+    _print_case(service, args.case_id)
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from osintizada.observability import configure_logging
+
+    configure_logging(args.log_level or "INFO")
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("OSINTIZADA_API_TOKEN"):
+        print("erro: para expor fora de localhost defina OSINTIZADA_API_TOKEN", file=sys.stderr)
+        return 2
+    uvicorn.run("osintizada.api.app:create_app", factory=True, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+def cmd_db(args: argparse.Namespace) -> int:
+    from osintizada.db import Database
+
+    db = Database()
+    db.upgrade()
+    print(f"Migrações aplicadas em {db.url.split('@')[-1]}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="osintizada", description="OSINT Investigation Orchestrator")
     parser.add_argument("--version", action="version", version=f"osintizada {__version__}")
+    parser.add_argument("--log-level", default=None, help="Logs estruturados (JSON) em stderr: DEBUG, INFO, WARNING")
     sub = parser.add_subparsers(dest="command", required=True)
     modes = [m.value for m in SearchMode if m != SearchMode.RAW]
     types = [t.value for t in IdentifierType]
@@ -244,6 +350,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_extract)
 
+    p = sub.add_parser("investigate", help="Investigação persistente (Case, pivôs, correlação, auditoria)")
+    p.add_argument("input", nargs="+")
+    p.add_argument("--mode", choices=modes, default=SearchMode.DEEP.value)
+    p.add_argument("--type", choices=types, help="Força o tipo de todos os inputs")
+    p.add_argument("--max-depth", type=int)
+    p.add_argument("--max-entities", type=int)
+    p.add_argument("--max-pivots", type=int)
+    p.add_argument("--providers", nargs="*")
+    p.add_argument("--block", nargs="*", help="Valores/domínios que não devem ser pivotados")
+    p.add_argument("--case", help="Case existente (padrão: cria um novo)")
+    p.add_argument("--name", help="Nome do novo Case")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_investigate)
+
+    p = sub.add_parser("cases", help="Lista Cases")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_cases)
+
+    p = sub.add_parser("case", help="Mostra entidades, relações e buscas de um Case")
+    p.add_argument("case_id")
+    p.set_defaults(func=cmd_case)
+
+    p = sub.add_parser("serve", help="Inicia a API HTTP")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("db", help="Banco de dados")
+    p.add_argument("action", choices=["upgrade"])
+    p.set_defaults(func=cmd_db)
+
     p = sub.add_parser("providers", help="Lista providers e status de configuração")
     p.add_argument("--health", action="store_true", help="Executa healthcheck (pode consumir quota)")
     p.add_argument("--json", action="store_true")
@@ -254,9 +391,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     load_dotenv(os.environ.get("OSINTIZADA_ENV_FILE", ".env"))
+    if args.log_level:
+        from osintizada.observability import configure_logging
+
+        configure_logging(args.log_level)
     try:
         return args.func(args)
-    except ValueError as exc:
+    except (ValueError, LookupError, RuntimeError) as exc:
         print(f"erro: {exc}", file=sys.stderr)
         return 2
 

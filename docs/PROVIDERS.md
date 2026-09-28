@@ -33,7 +33,9 @@ class ExampleProvider(APIProvider):
     tier = SourceTier.TIER_2
 
     trusted_hosts = ("api.example.com",)      # endpoint fixo (dispensa DNS no check SSRF)
-    default_rate_limit_per_minute = 30
+    default_requests_per_second = 2           # aplicado ANTES de cada requisição
+    default_concurrency = 3                   # chamadas simultâneas deste provider
+    default_cache_ttl_seconds = 3600
     parser_version = "1"                      # incremente ao mudar o parsing (invalida cache)
 
     async def _search(self, identifier: NormalizedIdentifier, query: str | None) -> list[ProviderResult]:
@@ -64,16 +66,30 @@ estiver lá. Nada mais no sistema precisa mudar.
 | `RateLimitedError` | `RATE_LIMITED` (+ `metadata.retry_after`) |
 | `AuthRequiredError` | `AUTH_REQUIRED` |
 | `SkippedError` | `SKIPPED` |
-| `TransientError` (5xx, conexão) | re-tentado com backoff; esgotado → `FAILED` |
+| `ProviderNotConfigured` | `NOT_CONFIGURED` |
+| `ProviderTimeout` (timeout, HTTP 408) | re-tentado com backoff; esgotado → `TIMEOUT` |
+| `ProviderUnavailable` (502/503/504, conexão) | re-tentado com backoff; esgotado → `FAILED` |
+| HTTP 400/401/403/404/500 | **sem retry** (`404` com `not_found_ok=True` = `NO_RESULTS`) |
+| HTTP 429 | 1 nova tentativa se `Retry-After` ≤ 15s; senão `RATE_LIMITED` + pausa do provider |
 | circuit breaker aberto | `SKIPPED` (sem chamada) |
 | pausa após 429 em andamento | `RATE_LIMITED` (sem chamada) |
 | URL recusada pelo SSRF check | `FAILED` |
 | qualquer outra exceção | `FAILED` (mensagem sanitizada) |
 | resultados | `SUCCESS` / vazio → `NO_RESULTS` |
 
-- Cada `ProviderResult` deve informar `source_url` quando existir, `raw` (dado original), `observed_at`
-  (data do conteúdo, se conhecida), `is_historical` para dados de arquivo, `classification` e
-  `confidence` — que é a confiança **do provider no dado**, não confiança de identidade.
+- Cada `ProviderResult` (alias `ProviderItem`) deve informar `source_url` quando existir, `raw` (dado
+  original), `observed_at` (data do conteúdo, se conhecida), `is_historical` para dados de arquivo,
+  `classification` e `confidence`. Essa confiança é a **do provider no dado**, não confiança de identidade.
+- Relações: por padrão `entidade consultada --relation_to_query--> item`. Use `relation_direction="reverse"`
+  para inverter (ex.: `SUBDOMAIN --PART_OF--> DOMAIN`) e `source_entity=EntityRef(...)` para ligar dois itens
+  do mesmo resultado (ex.: `NETWORK --REGISTERED_TO--> ORGANIZATION`). Sempre com `relation_reason`.
+- Um item com o mesmo tipo e valor da entidade consultada não cria relação. Ele só anexa evidência e
+  `attributes` (ex.: nome do AS, TXT do domínio).
+- `attributes` são observações da entidade (país, TTL, papel...). Valores divergentes entre fontes viram
+  `CONFLICTING_EVIDENCE` e nunca são sobrescritos.
+- `source_type` sobrepõe a natureza da fonte (`ARCHIVE`, `TOR`...).
+- Todo código de erro fica em `ProviderResponse.error_code` (ex.: `HTTP_429`, `CONNECTION_ERROR`,
+  `CIRCUIT_OPEN`, `SSRF_BLOCKED`, `BUDGET_EXHAUSTED`) e é persistido em `search_executions`.
 - Nunca logar ou devolver secrets; mensagens de erro passam por `sanitize()`.
 
 ## Healthcheck
@@ -117,11 +133,27 @@ Nomes de pessoa e localizações exigem análise semântica e ficarão na camada
 
 ## Providers existentes
 
-| Nome | Tipo | Suporta | Credenciais | Descrição |
+| Nome | Tipo / tier | Suporta | Credenciais | Entrega |
 |---|---|---|---|---|
-| `local.identifier_analysis` | local | email, url, telegram_link, subdomain, hostname | — | domínio de email, local-part como *hipótese* de username, domínio/subdomínio de URL, perfil social em URL |
-| `search.brave` | API (search) | todos (consultas textuais) | `BRAVE_SEARCH_API_KEY` | Brave Search API oficial; operadores: aspas, site, filetype, intitle, -, OR |
-| `search.google_cse` | API (search) | todos (consultas textuais) | `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | Custom Search JSON API; todos os operadores; acesso restrito pelo Google a contas existentes |
+| `infra.dns` | API / 1 | domain, subdomain, hostname, ipv4, ipv6, asn | — | A/AAAA/CNAME/MX/NS/TXT (SPF interpretado), PTR, IP→ASN e prefixo (Team Cymru via DNS), nome do AS |
+| `infra.rdap` | API / 1 | ipv4, ipv6, cidr, asn, domain | — | bloco de rede, ASN de origem, organização registrante, registrar, nameservers delegados, contatos de abuso (dados redigidos são ignorados) |
+| `infra.crtsh` | API / 2 | domain | — | subdomínios passivos via Certificate Transparency (wildcards normalizados, fora do domínio descartados), emails em certificados |
+| `archive.wayback` | API / 5 | domain, subdomain, url | — | URLs e hosts históricos, capturas de páginas. **Sempre `HISTORICAL_DATA`** |
+| `social.telegram` | API / 2 | telegram_username, telegram_id, telegram_link, username | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` (+ pacote `telethon`) | Telegram ID (estável) + username (mutável, `USES_USERNAME` datado), nome exibido, tipo de peer |
+| `search.brave` | API (search) / 3 | todos (consultas textuais) | `BRAVE_SEARCH_API_KEY` | páginas + entidades co-ocorrentes; operadores: aspas, site, filetype, intitle, -, OR |
+| `search.google_cse` | API (search) / 3 | todos (consultas textuais) | `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | idem; todos os operadores; acesso restrito pelo Google a contas existentes |
+| `local.identifier_analysis` | local / 1 | email, url, telegram_link, subdomain, hostname | — | derivações estruturais (DERIVED) |
+
+Seleção por tipo de identificador (sem executar providers irrelevantes):
+
+| Identificador | Providers |
+|---|---|
+| DOMAIN | DNS, RDAP, Certificate Transparency, Wayback, Search |
+| SUBDOMAIN | DNS, Wayback, Search |
+| IP | DNS (PTR + ASN), RDAP, Search |
+| ASN / CIDR | DNS (ASN), RDAP, Search |
+| USERNAME / Telegram | Telegram (se configurado), Search |
+| EMAIL | derivação local, Search |
 
 Mecanismos não integrados e por quê: **Bing Web Search API** foi descontinuada pela Microsoft em 2025;
 **DuckDuckGo** e **Yahoo** não oferecem API de resultados web e scraping violaria os termos de uso;

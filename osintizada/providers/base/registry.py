@@ -58,7 +58,13 @@ def register_provider(cls: type[BaseProvider]) -> type[BaseProvider]:
     return default_registry.register(cls)
 
 
-_BUILTIN_PACKAGES = ("osintizada.providers.local", "osintizada.providers.search")
+_BUILTIN_PACKAGES = (
+    "osintizada.providers.local",
+    "osintizada.providers.search",
+    "osintizada.providers.infrastructure",
+    "osintizada.providers.archive",
+    "osintizada.providers.telegram",
+)
 
 
 def load_builtin_providers() -> ProviderRegistry:

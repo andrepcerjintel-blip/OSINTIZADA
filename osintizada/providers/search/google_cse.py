@@ -15,6 +15,8 @@ import httpx
 from osintizada.net.http_client import HTTPResult, SafeHTTPClient
 from osintizada.providers.base import (
     AuthRequiredError,
+    ProviderTimeout,
+    ProviderUnavailable,
     RateLimitedError,
     register_provider,
 )
@@ -24,7 +26,6 @@ from osintizada.providers.search.base import (
     clean_snippet,
     parse_date,
 )
-from osintizada.resilience import TransientError
 
 GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 _RATE_REASONS = {"rateLimitExceeded", "dailyLimitExceeded", "userRateLimitExceeded", "quotaExceeded"}
@@ -61,8 +62,10 @@ class GoogleCSEProvider(SearchEngineProvider):
                 "q": query,
                 "num": self.max_results_per_query,
             })
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeout(f"{type(exc).__name__}: {exc}") from exc
         except httpx.TransportError as exc:
-            raise TransientError(f"{type(exc).__name__}: {exc}") from exc
+            raise ProviderUnavailable(f"{type(exc).__name__}: {exc}", code="CONNECTION_ERROR") from exc
         self._raise_for_google_error(result)
         items = result.json().get("items") or []
         hits = []
@@ -83,12 +86,17 @@ class GoogleCSEProvider(SearchEngineProvider):
             ))
         return hits
 
+    async def _healthcheck(self) -> str:
+        async with self.http_client() as client:
+            hits = await self.execute_query(client, "osintizada")  # consome 1 consulta da quota
+        return f"ok ({len(hits)} resultado(s))"
+
     def _raise_for_google_error(self, result: HTTPResult) -> None:
         if result.status_code < 400:
             return
         reasons = _error_reasons(result)
         if result.status_code == 403 and reasons & _RATE_REASONS:
-            raise RateLimitedError(f"Quota do Google CSE excedida ({', '.join(sorted(reasons))})")
+            raise RateLimitedError(f"Quota do Google CSE excedida ({', '.join(sorted(reasons))})", code="QUOTA_EXCEEDED")
         if result.status_code == 400 and "keyInvalid" in reasons:
-            raise AuthRequiredError("Chave de API do Google CSE inválida")
+            raise AuthRequiredError("Chave de API do Google CSE inválida", code="INVALID_KEY")
         self.raise_for_status(result, auth_statuses=(401, 403))

@@ -6,10 +6,10 @@ import ipaddress
 import re
 from collections.abc import Iterable
 
+from osintizada.core.domains import get_domain_parser
 from osintizada.core.enums import EntityType, IdentifierType
-from osintizada.core.identifiers import COMMON_TLDS
 from osintizada.core.urls import canonical_url
-from osintizada.core.validators import is_valid_hostname, registrable_domain
+from osintizada.core.validators import is_valid_hostname
 from osintizada.extractors.base import BaseExtractor, Extraction
 
 _URL = re.compile(r"\b(?:https?://|www\.)[^\s<>\"'`{}|\\^]+", re.I)
@@ -63,10 +63,11 @@ class DomainExtractor(BaseExtractor):
     def extract(self, text: str) -> Iterable[Extraction]:
         for m in _HOST.finditer(text):
             host = m.group(1).lower()
-            tld = host.rsplit(".", 1)[-1]
-            if tld not in COMMON_TLDS or not is_valid_hostname(host):
+            parts = get_domain_parser().parse_domain(host)
+            # Só sufixos reais da PSL: descarta "relatorio.pdf", "arquivo.txt", "e.g".
+            if not parts.is_known_suffix or parts.registrable_domain is None or not is_valid_hostname(host):
                 continue
-            root = registrable_domain(host)
+            root = parts.registrable_domain
             bare = host[4:] if host.startswith("www.") else host
             is_root = bare == root
             yield self.make(text, m.start(1), m.end(1), EntityType.DOMAIN if is_root else EntityType.SUBDOMAIN,

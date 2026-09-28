@@ -251,3 +251,111 @@ IDENTIFIER_PLATFORM: dict[IdentifierType, str] = {
     IdentifierType.YOUTUBE_CHANNEL: "youtube",
     IdentifierType.FACEBOOK_PROFILE: "facebook",
 }
+
+
+# --- Persistência / investigação ------------------------------------------------
+
+
+class CaseStatus(StrEnum):
+    OPEN = "OPEN"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ARCHIVED = "ARCHIVED"
+
+
+class SearchExecutionStatus(StrEnum):
+    """Status persistido de cada consulta. EMPTY (respondeu sem resultados) ≠ FAILED."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    EMPTY = "EMPTY"
+    FAILED = "FAILED"
+    TIMEOUT = "TIMEOUT"
+    RATE_LIMITED = "RATE_LIMITED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    SKIPPED = "SKIPPED"
+    CANCELLED = "CANCELLED"
+
+
+PROVIDER_TO_EXECUTION_STATUS: dict[ProviderStatus, SearchExecutionStatus] = {
+    ProviderStatus.SUCCESS: SearchExecutionStatus.SUCCESS,
+    ProviderStatus.NO_RESULTS: SearchExecutionStatus.EMPTY,
+    ProviderStatus.FAILED: SearchExecutionStatus.FAILED,
+    ProviderStatus.RATE_LIMITED: SearchExecutionStatus.RATE_LIMITED,
+    ProviderStatus.AUTH_REQUIRED: SearchExecutionStatus.AUTH_REQUIRED,
+    ProviderStatus.NOT_CONFIGURED: SearchExecutionStatus.NOT_CONFIGURED,
+    ProviderStatus.TIMEOUT: SearchExecutionStatus.TIMEOUT,
+    ProviderStatus.SKIPPED: SearchExecutionStatus.SKIPPED,
+    ProviderStatus.CANCELLED: SearchExecutionStatus.CANCELLED,
+}
+
+
+class SourceType(StrEnum):
+    """Natureza da fonte de uma evidência."""
+
+    PUBLIC = "PUBLIC"
+    AUTHENTICATED = "AUTHENTICATED"
+    PAID = "PAID"
+    RESTRICTED = "RESTRICTED"
+    ARCHIVE = "ARCHIVE"
+    TOR = "TOR"
+    MANUAL = "MANUAL"
+    DERIVED = "DERIVED"
+    USER_INPUT = "USER_INPUT"
+
+
+class DataTemporality(StrEnum):
+    CURRENT_DATA = "CURRENT_DATA"
+    HISTORICAL_DATA = "HISTORICAL_DATA"
+
+
+class AuditEvent(StrEnum):
+    CASE_CREATED = "CASE_CREATED"
+    CASE_STARTED = "CASE_STARTED"
+    CASE_FINISHED = "CASE_FINISHED"
+    CASE_FAILED = "CASE_FAILED"
+    SEED_REGISTERED = "SEED_REGISTERED"
+    SEARCH_STARTED = "SEARCH_STARTED"
+    SEARCH_FINISHED = "SEARCH_FINISHED"
+    PROVIDER_CALLED = "PROVIDER_CALLED"
+    PROVIDER_FAILED = "PROVIDER_FAILED"
+    ENTITY_CREATED = "ENTITY_CREATED"
+    ENTITY_MERGED = "ENTITY_MERGED"
+    EVIDENCE_CREATED = "EVIDENCE_CREATED"
+    RELATIONSHIP_CREATED = "RELATIONSHIP_CREATED"
+    PIVOT_CREATED = "PIVOT_CREATED"
+    PIVOT_SKIPPED = "PIVOT_SKIPPED"
+    CORRELATION_CREATED = "CORRELATION_CREATED"
+    CONFLICT_DETECTED = "CONFLICT_DETECTED"
+    BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+
+
+class PivotStatus(StrEnum):
+    SCHEDULED = "SCHEDULED"
+    EXECUTED = "EXECUTED"
+    SKIPPED_VISITED = "SKIPPED_VISITED"
+    SKIPPED_DEPTH = "SKIPPED_DEPTH"
+    SKIPPED_BUDGET = "SKIPPED_BUDGET"
+    SKIPPED_LOW_CONFIDENCE = "SKIPPED_LOW_CONFIDENCE"
+    SKIPPED_LOW_PRIORITY = "SKIPPED_LOW_PRIORITY"
+    SKIPPED_BLOCKED = "SKIPPED_BLOCKED"
+
+
+class CorrelationLevel(StrEnum):
+    HIGH_CONFIDENCE = "HIGH_CONFIDENCE"  # gera SAME_AS (exige sinal forte)
+    POSSIBLE = "POSSIBLE"                # gera POSSIBLY_SAME_AS
+    WEAK = "WEAK"                        # registrado, sem relação
+    UNRELATED = "UNRELATED"
+
+
+CLASSIFICATION_TO_SOURCE_TYPE: dict[DataClassification, SourceType] = {
+    DataClassification.PUBLIC: SourceType.PUBLIC,
+    DataClassification.AUTHENTICATED: SourceType.AUTHENTICATED,
+    DataClassification.PAID: SourceType.PAID,
+    DataClassification.RESTRICTED: SourceType.RESTRICTED,
+    DataClassification.MANUAL: SourceType.MANUAL,
+    DataClassification.DERIVED: SourceType.DERIVED,
+}

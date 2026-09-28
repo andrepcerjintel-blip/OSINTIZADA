@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from osintizada.net.http_client import SafeHTTPClient
 from osintizada.providers.base import register_provider
-from osintizada.providers.search.base import SearchEngineProvider, SearchHit, clean_snippet, parse_date
+from osintizada.providers.search.base import (
+    SearchEngineProvider,
+    SearchHit,
+    clean_snippet,
+    parse_date,
+)
 
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 

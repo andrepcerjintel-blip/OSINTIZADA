@@ -1,88 +1,100 @@
 # OSINTIZADA
 
-Plataforma privada, modular e extensível de investigação OSINT — um **OSINT Investigation Orchestrator**.
+Plataforma privada, modular e extensível de investigação OSINT: um **OSINT Investigation Orchestrator**.
 
-A partir de um ou mais identificadores, o OSINTIZADA detecta o tipo da entrada, normaliza, planeja consultas
-justificadas, seleciona fontes relevantes, coleta em paralelo, registra evidências com proveniência completa e
-(nas próximas fases) gera pivôs, correlaciona entidades e monta timeline e grafo.
+A partir de um ou mais identificadores, o OSINTIZADA abre um **Case**, registra os inputs como **seeds**,
+consulta fontes reais, transforma cada resultado em **evidência**, consolida **entidades** sem duplicatas,
+gera **pivôs** até a profundidade configurada, **correlaciona** entidades com score explicável e persiste
+tudo com auditoria.
 
 > **Princípio:** toda conclusão deve ser rastreável até a evidência que a originou.
 > **Código produz evidência. IA interpreta evidência.**
 
-## Estado atual — v0.2.0 (Fases 1 e 2a–2c)
+## Estado atual (v0.3.0)
 
 | Componente | Estado |
 |---|---|
-| Identifier Engine (multi-hipótese) | ✅ |
-| Normalização (telefone, CPF/CNPJ, email, domínio, URL, IP, ASN, cripto, nomes) | ✅ |
-| Modelos: Entity / Relationship / Evidence / ProviderResponse | ✅ |
-| Query Planner + QueryBuilder (operadores, prioridade, custo, motivo) | ✅ |
-| Evidence Engine (hash, fingerprint, deduplicação) | ✅ |
-| Interface de providers + registry + healthcheck | ✅ |
-| SourceOrchestrator (depth 0, paralelo, consultas planejadas, orçamento, cancelamento) | ✅ |
-| Resiliência: rate limit, retry/backoff, circuit breaker, cache | ✅ |
-| Cliente HTTP seguro (SSRF, redirects validados, limite de tamanho) | ✅ |
-| Entity Extractors (13) | ✅ |
-| Search engines: Brave Search API, Google Programmable Search + RAW SEARCH | ✅ (exigem chave) |
-| Archives, Telegram, GitHub, Brasil, infraestrutura… | ⏳ ver roadmap |
-| Pivot / Correlation / Timeline / Graph / Persistência / API / UI | ⏳ ver [roadmap](docs/ARCHITECTURE.md#8-roadmap) |
+| Identifier Engine, normalização, Public Suffix List oficial | ✅ |
+| Case, seeds, entidades, evidências, relações, buscas, audit log, pivôs, correlações, conflitos (SQLite/PostgreSQL + Alembic) | ✅ |
+| Resiliência: rate limit (antes da requisição), retry/backoff, circuit breaker, cache, concorrência global e por provider | ✅ |
+| **DNS** (A/AAAA/MX/NS/TXT/CNAME/PTR + IP→ASN Team Cymru) | ✅ sem chave |
+| **RDAP** (IP, ASN, domínio) | ✅ sem chave |
+| **Certificate Transparency** (crt.sh) | ✅ sem chave |
+| **Internet Archive / Wayback** (sempre dado histórico) | ✅ sem chave |
+| Search: Brave, Google Programmable Search | ✅ exigem chave |
+| Telegram (Telethon, sessão legítima) | ✅ exige credenciais (senão `NOT_CONFIGURED`) |
+| Pivot Engine (prioridade, profundidade, orçamentos, anti-loop) | ✅ |
+| Correlation Engine (determinístico, explicável) + contradições | ✅ inicial |
+| API FastAPI + CLI + logs JSON estruturados | ✅ |
+| UI, timeline, export, imagens, Tor, Credilink | ⏳ ver [roadmap](docs/ARCHITECTURE.md#9-roadmap) |
 
-Nenhum resultado é simulado: fontes não integradas simplesmente não existem ou aparecem como `NOT CONFIGURED`.
+Nenhum resultado é simulado. Provider sem credencial aparece como `NOT_CONFIGURED`, falha aparece como
+`FAILED`/`TIMEOUT`/`RATE_LIMITED` com código, e ausência de resultado aparece como `EMPTY`.
 
 ## Instalação
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env   # opcional; .env nunca vai para o Git
+pip install -e ".[dev]"                 # + ".[telegram]" e/ou ".[postgres]" se for usar
+cp .env.example .env                    # opcional; .env nunca vai para o Git
+osintizada db upgrade                   # cria/atualiza o banco (SQLite em data/ por padrão)
 ```
 
-## Uso (CLI)
+## Investigação (CLI)
 
 ```bash
-# Hipóteses de tipo + normalização
-osintizada detect darkwolf88
-osintizada detect "(61) 99999-9999"
+# Case novo, ciclo completo: seed → providers → evidência → entidades → pivôs → correlação
+osintizada investigate example.com --mode deep
+osintizada investigate contato@empresa.com.br @usuario --mode quick --block gmail.com
+osintizada investigate 8.8.8.8 --max-depth 1 --json
 
-# Consultas planejadas (com prioridade e motivo)
-osintizada plan fearless1999 --mode quick
-osintizada plan 52998224725 --type cpf --mode deep_sweep --json
-
-# RAW SEARCH (registrada como consulta manual)
-osintizada raw '"usuario123" "proton.me"'
-
-# Investigação depth 0: consultas planejadas + mecanismos configurados + derivação local
-export BRAVE_SEARCH_API_KEY=...        # ou via .env
-osintizada run fearless1999 --mode quick
-osintizada run fearless1999@gmail.com https://github.com/torvalds
-
-# RAW SEARCH executada (consulta enviada sem alteração e registrada)
-osintizada search '"usuario123" "proton.me"'
-
-# Extração de entidades de texto (offline)
-osintizada extract --file pagina.txt
-echo "contato: fulano@site.com.br, CPF 529.982.247-25" | osintizada extract
-
-# Status das integrações (+ healthcheck, pode consumir quota)
-osintizada providers --health
+osintizada cases                        # lista Cases
+osintizada case <case_id>               # entidades, relações e buscas de um Case
+osintizada providers --health           # status das integrações (pode consumir quota)
 ```
 
-Também disponível como `python -m osintizada ...`.
+Ferramentas auxiliares (sem persistência): `detect`, `plan`, `raw`, `run`, `search`, `extract`.
+
+## API
+
+```bash
+osintizada serve                        # http://127.0.0.1:8000/docs
+# fora de localhost é obrigatório: OSINTIZADA_API_TOKEN=... osintizada serve --host 0.0.0.0
+```
+
+```bash
+curl -X POST localhost:8000/cases -H 'content-type: application/json' -d '{"name": "Caso 1"}'
+curl -X POST localhost:8000/cases/<id>/investigate -H 'content-type: application/json' \
+     -d '{"inputs": ["example.com"], "mode": "deep", "max_depth": 2}'
+# → {"case_id": "...", "investigation_id": "...", "status": "RUNNING"}
+```
+
+| Rota | Conteúdo |
+|---|---|
+| `POST /cases`, `GET /cases`, `GET /cases/{id}` | Cases (com seeds, execuções e contagens) |
+| `POST /cases/{id}/investigate` | inicia investigação (background) |
+| `GET /cases/{id}/entities[?type=]` | entidades com nº de evidências |
+| `GET /cases/{id}/entities/{entity_id}` | evidências, relações e **"como chegamos aqui?"** |
+| `GET /cases/{id}/evidence`, `/relationships`, `/searches`, `/audit` | proveniência completa |
+| `GET /cases/{id}/pivots`, `/correlations`, `/conflicts` | decisões de pivô, scores explicáveis, contradições |
+| `GET /providers`, `GET /providers/health` | integrações (credenciais mascaradas), HEALTHY/DEGRADED/UNAVAILABLE/NOT_CONFIGURED |
 
 ## Testes
 
 ```bash
-pytest
+pytest          # 297 testes; providers externos testados com respostas simuladas (sem internet)
 ```
 
 ## Documentação
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — diagnóstico, arquitetura alvo, gap analysis e roadmap
-- [docs/PROVIDERS.md](docs/PROVIDERS.md) — como criar e registrar um provider
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — configuração e secrets
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): auditoria, fluxo, modelo de dados, gap analysis e roadmap
+- [docs/PROVIDERS.md](docs/PROVIDERS.md): contrato, providers existentes e como criar um novo
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): modos, orçamentos, pivôs, correlação, banco e secrets
 - [CHANGELOG.md](CHANGELOG.md)
 
 ## Uso responsável
 
-O OSINTIZADA coleta apenas informação legitimamente acessível (fontes públicas, APIs autorizadas e serviços
-contratados). Não implementa bypass de autenticação, exploração, quebra de senha ou evasão de controles de acesso.
+O OSINTIZADA coleta apenas informação legitimamente acessível: fontes públicas, APIs autorizadas e
+serviços contratados. Não implementa bypass de autenticação, exploração, quebra de senha ou evasão de
+controles de acesso. Correlações são hipóteses com evidência. `SAME_AS` exige sinal forte, e homônimos
+nunca são ligados só pelo nome.

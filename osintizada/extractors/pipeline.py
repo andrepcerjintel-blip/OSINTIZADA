@@ -17,8 +17,17 @@ from osintizada.extractors.base import BaseExtractor, Extraction
 from osintizada.extractors.contact import EmailExtractor, PhoneExtractor
 from osintizada.extractors.crypto import CryptoExtractor, HashExtractor
 from osintizada.extractors.documents import CNPJExtractor, CPFExtractor
-from osintizada.extractors.network import ASNExtractor, DomainExtractor, IPExtractor, URLExtractor
-from osintizada.extractors.social import MentionExtractor, SocialProfileExtractor, TelegramExtractor
+from osintizada.extractors.network import (
+    ASNExtractor,
+    DomainExtractor,
+    IPExtractor,
+    URLExtractor,
+)
+from osintizada.extractors.social import (
+    MentionExtractor,
+    SocialProfileExtractor,
+    TelegramExtractor,
+)
 
 
 def default_extractors() -> list[BaseExtractor]:

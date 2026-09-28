@@ -13,7 +13,7 @@ import hashlib
 import json
 from collections.abc import Iterable
 
-from osintizada.core.enums import DataClassification, EntityOrigin
+from osintizada.core.enums import DataClassification, EntityOrigin, EntityType
 from osintizada.core.models import (
     Entity,
     Evidence,
@@ -30,18 +30,20 @@ def content_hash(payload: dict) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def evidence_fingerprint(result: ProviderResult) -> str:
-    """Chave de deduplicação independente de provider.
+def evidence_fingerprint_for(entity_type, value: str, source_url: str | None, raw: dict) -> str:
+    """Chave de deduplicação de evidência independente de provider.
 
-    Mesma entidade + mesma URL canônica => mesma evidência.
-    Sem URL, usa o hash do conteúdo bruto.
+    Mesma entidade + mesma URL canônica => mesma evidência (15 motores com a mesma
+    página = 1 evidência). Sem URL, a âncora é o hash do conteúdo bruto: fontes
+    diferentes (conteúdos diferentes) geram evidências distintas.
     """
-    entity_key = f"{result.type.value}:{result.value}"
-    if result.source_url:
-        anchor = canonical_url(result.source_url)
-    else:
-        anchor = "raw:" + content_hash(result.raw)
+    entity_key = f"{EntityType(entity_type).value}:{value}"
+    anchor = canonical_url(source_url) if source_url else "raw:" + content_hash(raw)
     return hashlib.sha256(f"{entity_key}|{anchor}".encode()).hexdigest()
+
+
+def evidence_fingerprint(result: ProviderResult) -> str:
+    return evidence_fingerprint_for(result.type, result.value, result.source_url, result.raw)
 
 
 class EvidenceEngine:

@@ -2,7 +2,13 @@
 # NUNCA coloque API keys aqui: secrets vêm de variáveis de ambiente (.env fora do Git).
 # Valores omitidos usam os padrões de osintizada/config.py.
 
+database:
+  # DATABASE_URL (variável de ambiente) tem precedência. Produção: postgresql+psycopg://…
+  url: sqlite:///data/osintizada.db
+
 search:
+  global_concurrency: 10        # teto global de chamadas simultâneas a providers
+  hard_max_depth: 5             # nenhuma requisição ultrapassa esta profundidade
   max_depth: 2
   max_queries: 100
   max_entities: 500
@@ -15,8 +21,10 @@ query_budget:
   max_cost_per_search: 200
   costs:
     local: 0
+    dns: 0
     web: 1
-    api: 2
+    api: 1
+    archive: 1
     browser: 3
     tor: 4
     paid: 5
@@ -26,27 +34,71 @@ tor:
   socks_proxy: socks5h://127.0.0.1:9050
 
 resilience:
-  max_retries: 2                  # só falhas transitórias (5xx, conexão); 429 nunca é re-tentado
+  max_retries: 2                  # só falhas recuperáveis: timeout, 502/503/504, rede
   backoff_base_seconds: 0.5
   backoff_max_seconds: 8
   breaker_failure_threshold: 5    # falhas consecutivas para abrir o circuito
   breaker_recovery_seconds: 120
   default_cooldown_seconds: 60    # pausa após 429 sem Retry-After
+  rate_limit_retries: 1           # 429: uma nova tentativa se Retry-After/backoff ≤ max_rate_limit_wait_seconds
+  max_rate_limit_wait_seconds: 15
   default_cache_ttl_seconds: 3600
   max_response_bytes: 5242880
 
 network:
-  user_agent: "OSINTIZADA/0.2 (+investigation research tool)"
+  user_agent: "OSINTIZADA/0.3 (+investigation research tool)"
 
-# Overrides por provider (nome = BaseProvider.name)
+# Overrides por provider (nome = BaseProvider.name). Nomes curtos aceitos: concurrency, cache_ttl.
+# Os valores abaixo repetem os padrões declarados em cada provider, para referência.
 providers:
   local.identifier_analysis:
     enabled: true
+  infra.dns:
+    enabled: true
+    concurrency: 10
+    requests_per_second: 20
+    cache_ttl: 3600               # TTL intermediário
+  infra.rdap:
+    enabled: true
+    concurrency: 4
+    requests_per_second: 1
+    cache_ttl: 86400              # TTL longo: dado de registro muda pouco
+  infra.crtsh:
+    enabled: true
+    concurrency: 2
+    rate_limit_per_minute: 12     # serviço comunitário
+    cache_ttl: 86400
+    max_results: 500
+  archive.wayback:
+    enabled: true
+    concurrency: 2
+    rate_limit_per_minute: 30
+    cache_ttl: 604800             # arquivo histórico: TTL longo
+    max_results: 200
+  social.telegram:
+    enabled: true                 # sem credenciais → NOT_CONFIGURED
+    concurrency: 1
+    rate_limit_per_minute: 20
   search.brave:
     enabled: true
+    concurrency: 3
     rate_limit_per_minute: 60     # plano gratuito da Brave: 1 req/s (0 = sem limite local)
-    cache_ttl_seconds: 21600
+    cache_ttl_seconds: 21600      # TTL menor: resultados de busca mudam
   search.google_cse:
     enabled: true
     rate_limit_per_minute: 60
     cache_ttl_seconds: 21600
+
+# Pivôs: prioridade 3=HIGH, 2=MEDIUM, 1=LOW, 0=nunca (padrões em osintizada/config.py)
+pivots:
+  min_confidence: 0.5
+  skip_non_public_ips: true
+  # priorities: {EMAIL: 3, USERNAME: 2, ORGANIZATION: 1, LOCATION: 0, ...}
+  # blocklist_domains: [gmail.com, github.com, cloudflare.com, ...]
+
+# Correlação determinística (pesos configuráveis; SAME_AS exige sinal forte)
+correlation:
+  same_as_threshold: 80
+  possible_threshold: 35
+  weak_threshold: 10
+  # weights: {same_telegram_id: 60, same_phone: 50, same_email: 45, same_username_rare: 25, ...}

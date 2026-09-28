@@ -10,12 +10,18 @@ reutilizam ``SearchRun`` como contrato.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Iterable
 
 from pydantic import BaseModel, Field
 
 from osintizada.config import Settings, get_settings
-from osintizada.core.enums import EntityOrigin, IdentifierType, ProviderStatus, SearchMode
+from osintizada.core.enums import (
+    EntityOrigin,
+    IdentifierType,
+    ProviderStatus,
+    SearchMode,
+)
 from osintizada.core.evidence import EvidenceEngine
 from osintizada.core.models import (
     Entity,
@@ -28,7 +34,11 @@ from osintizada.core.models import (
 from osintizada.core.normalization import normalize
 from osintizada.core.query_planner import PlannedQuery, QueryPlanner
 from osintizada.orchestration.search_manager import AggregatedHit, SearchManager
-from osintizada.providers.base import BaseProvider, ProviderRegistry, load_builtin_providers
+from osintizada.providers.base import (
+    BaseProvider,
+    ProviderRegistry,
+    load_builtin_providers,
+)
 from osintizada.resilience import ProviderRuntime
 
 
@@ -41,6 +51,7 @@ class ProviderSelection(BaseModel):
     selected: bool
     status_if_skipped: ProviderStatus | None = None
     reason: str
+    code: str | None = None
 
 
 class SearchLogEntry(BaseModel):
@@ -144,26 +155,27 @@ class SourceOrchestrator:
         chosen: list[BaseProvider] = []
         decisions: list[ProviderSelection] = []
 
-        def decide(p: BaseProvider, selected: bool, reason: str, status: ProviderStatus | None = None) -> None:
+        def decide(p: BaseProvider, selected: bool, reason: str, status: ProviderStatus | None = None,
+                   code: str | None = None) -> None:
             decisions.append(ProviderSelection(
                 provider=p.name, identifier=identifier.value, identifier_type=identifier.type.value,
-                selected=selected, status_if_skipped=status, reason=reason,
+                selected=selected, status_if_skipped=status, reason=reason, code=code,
             ))
 
         for p in self.providers:
             if not p.supports(identifier.type):
                 continue  # não aplicável: não polui o log
             if blocked and p.name in blocked:
-                decide(p, False, "Bloqueado pelo investigador", ProviderStatus.SKIPPED)
+                decide(p, False, "Bloqueado pelo investigador", ProviderStatus.SKIPPED, "BLOCKED")
             elif allowed is not None and p.name not in allowed:
-                decide(p, False, "Fora da lista de providers escolhida", ProviderStatus.SKIPPED)
+                decide(p, False, "Fora da lista de providers escolhida", ProviderStatus.SKIPPED, "NOT_SELECTED")
             elif not p.enabled:
-                decide(p, False, "Desabilitado na configuração", ProviderStatus.SKIPPED)
+                decide(p, False, "Desabilitado na configuração", ProviderStatus.SKIPPED, "DISABLED")
             elif p.effective_tier > profile.max_provider_tier:
                 decide(p, False, f"Tier {p.effective_tier} acima do máximo do modo ({profile.max_provider_tier})",
-                       ProviderStatus.SKIPPED)
+                       ProviderStatus.SKIPPED, "TIER_ABOVE_MODE")
             elif not p.is_configured():
-                decide(p, False, "Credenciais não configuradas", ProviderStatus.NOT_CONFIGURED)
+                decide(p, False, p.not_configured_reason(), ProviderStatus.NOT_CONFIGURED, "NOT_CONFIGURED")
             else:
                 chosen.append(p)
                 decide(p, True, f"Suporta {identifier.type.value}; tier {p.effective_tier}; custo {p.cost}")
@@ -181,15 +193,21 @@ class SourceOrchestrator:
         allowed: set[str] | None = None,
         blocked: set[str] | None = None,
         planned_queries: dict[str, list[PlannedQuery]] | None = None,
+        depth: int = 0,
+        call_limit: int | None = None,
+        cost_limit: int | None = None,
+        deadline: float | None = None,
     ) -> SearchRun:
-        """Executa uma rodada (depth 0).
+        """Executa UMA rodada de coleta para os identificadores informados.
 
         ``planned_queries`` permite fornecer consultas prontas por valor de
         identificador (ex.: RAW SEARCH); caso contrário o QueryPlanner gera.
+        ``call_limit``/``cost_limit``/``deadline`` (``time.monotonic()``) são os orçamentos
+        restantes da investigação: o que não couber vira SKIPPED com ``BUDGET_EXHAUSTED``.
         """
         profile = self.settings.mode(mode)
         run = SearchRun(mode=mode, case_id=case_id, seeds=[seed_entity(i) for i in identifiers])
-        budget = _Budget(self.settings.query_budget.max_cost_per_search)
+        budget = _Budget(self.settings.query_budget.max_cost_per_search if cost_limit is None else cost_limit)
         tasks: list[_Task] = []
         query_tasks: list[tuple[BaseProvider, NormalizedIdentifier, PlannedQuery]] = []
 
@@ -199,7 +217,7 @@ class SourceOrchestrator:
             for sel in decisions:
                 if not sel.selected:
                     run.responses.append(_skipped(sel.provider, ident, sel.reason,
-                                                  sel.status_if_skipped or ProviderStatus.SKIPPED))
+                                                  sel.status_if_skipped or ProviderStatus.SKIPPED, code=sel.code))
 
             direct = [p for p in chosen if not p.consumes_planned_queries]
             engines = [p for p in chosen if p.consumes_planned_queries]
@@ -207,18 +225,20 @@ class SourceOrchestrator:
                 if budget.take(provider.cost):
                     tasks.append(_Task(provider, ident, None))
                 else:
-                    run.responses.append(_skipped(provider.name, ident, "Orçamento de consultas esgotado"))
+                    run.responses.append(_skipped(provider.name, ident, "Orçamento de consultas esgotado",
+                                                  code="BUDGET_EXHAUSTED"))
 
             if engines:
                 queries = (planned_queries or {}).get(ident.value)
                 if queries is None:
-                    queries = self.planner.plan(ident, mode=mode)
+                    queries = self.planner.plan(ident, mode=mode, depth=depth)
                 run.planned_queries.extend(queries)
                 scheduled, incompatible = self.search_manager.schedule(queries, engines)
                 for engine_name, dropped in incompatible.items():
                     run.responses.append(_skipped(
                         engine_name, ident,
-                        f"{len(dropped)} consulta(s) com operadores não suportados por este mecanismo"))
+                        f"{len(dropped)} consulta(s) com operadores não suportados por este mecanismo",
+                        code="UNSUPPORTED_OPERATOR"))
                 query_tasks.extend((e, ident, q) for e, q in scheduled)
 
         # Limite global de consultas do modo, em ordem de prioridade.
@@ -236,18 +256,36 @@ class SourceOrchestrator:
             executed_queries.add(q.id)
             tasks.append(_Task(engine, ident, q))
         for name, n in over_limit.items():
-            run.responses.append(_skipped(name, None, f"{n} consulta(s) além do limite do modo ({profile.max_queries})"))
+            run.responses.append(_skipped(name, None, f"{n} consulta(s) além do limite do modo ({profile.max_queries})",
+                                          code="QUERY_LIMIT"))
         for name, n in over_budget.items():
-            run.responses.append(_skipped(name, None, f"{n} consulta(s) não executadas: orçamento esgotado"))
+            run.responses.append(_skipped(name, None, f"{n} consulta(s) não executadas: orçamento esgotado",
+                                          code="BUDGET_EXHAUSTED"))
 
-        semaphore = asyncio.Semaphore(max(1, profile.concurrency))
+        if call_limit is not None and len(tasks) > call_limit:
+            dropped: dict[str, int] = {}
+            for task in tasks[max(0, call_limit):]:
+                dropped[task.provider.name] = dropped.get(task.provider.name, 0) + 1
+            tasks = tasks[:max(0, call_limit)]
+            for name, n in dropped.items():
+                run.responses.append(_skipped(name, None, f"{n} chamada(s) não executadas: max_queries da "
+                                                          "investigação atingido", code="BUDGET_EXHAUSTED"))
+
+        # Dois níveis de concorrência: do modo (esta rodada) e global (todo o runtime).
+        mode_semaphore = asyncio.Semaphore(max(1, profile.concurrency))
+        global_semaphore = self.runtime.global_semaphore(self.settings.search.global_concurrency)
 
         async def execute(task: _Task) -> ProviderResponse:
-            async with semaphore:
+            query_text = task.query.query if task.query else None
+            async with mode_semaphore, global_semaphore:
                 if self._cancel.is_set():
                     return _skipped(task.provider.name, task.identifier, "Pesquisa cancelada pelo investigador",
-                                    ProviderStatus.CANCELLED, query=task.query.query if task.query else None)
-                response = await task.provider.search(task.identifier, task.query.query if task.query else None)
+                                    ProviderStatus.CANCELLED, query=query_text, code="CANCELLED")
+                if deadline is not None and time.monotonic() >= deadline:
+                    return _skipped(task.provider.name, task.identifier, "Tempo máximo da investigação atingido",
+                                    query=query_text, code="BUDGET_EXHAUSTED")
+                response = await task.provider.search(task.identifier, query_text)
+                response.metadata["identifier_value"] = task.identifier.value
                 if task.query is not None:
                     response.metadata.update(planned_query_id=task.query.id, reason=task.query.reason,
                                              priority=task.query.priority, category=task.query.category.value)
@@ -298,8 +336,13 @@ class _Budget:
 
 
 def _skipped(provider: str, ident: NormalizedIdentifier | None, reason: str,
-             status: ProviderStatus = ProviderStatus.SKIPPED, query: str | None = None) -> ProviderResponse:
-    return ProviderResponse(
+             status: ProviderStatus = ProviderStatus.SKIPPED, query: str | None = None,
+             code: str | None = None) -> ProviderResponse:
+    response = ProviderResponse(
         provider=provider, query=query or (ident.value if ident else "*"),
         identifier_type=ident.type if ident else None, status=status, finished_at=utcnow(), errors=[reason],
+        error_code=code,
     )
+    if ident is not None:
+        response.metadata["identifier_value"] = ident.value
+    return response

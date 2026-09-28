@@ -35,6 +35,11 @@ class ProviderRuntime:
         # Injeções para testes/ambientes controlados.
         self.transport = transport
         self.resolver = resolver
+        self.dns_resolver: object | None = None  # injeção de resolver DNS (testes)
+        self.telegram_client_factory: Callable[[], object] | None = None  # injeção de cliente Telegram (testes)
+        self.last_errors: dict[str, dict] = {}
+        self.last_latency_ms: dict[str, float] = {}
+        self._global_semaphore: asyncio.Semaphore | None = None
         self._breakers: dict[str, CircuitBreaker] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
         self.metrics: Counter[str] = Counter()
@@ -50,6 +55,12 @@ class ProviderRuntime:
         if key not in self._semaphores:
             self._semaphores[key] = asyncio.Semaphore(limit)
         return self._semaphores[key]
+
+    def global_semaphore(self, limit: int) -> asyncio.Semaphore:
+        """Semáforo global compartilhado por todas as rodadas deste runtime."""
+        if self._global_semaphore is None:
+            self._global_semaphore = asyncio.Semaphore(max(1, limit))
+        return self._global_semaphore
 
     def count(self, metric: str, n: int = 1) -> None:
         self.metrics[metric] += n

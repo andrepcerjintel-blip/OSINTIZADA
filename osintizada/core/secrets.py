@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from typing import Any
 
 _REDACTED = "****"
 
@@ -75,3 +76,29 @@ class SecretRedactingFilter(logging.Filter):
         record.msg = sanitize(str(record.getMessage()))
         record.args = ()
         return True
+
+
+_SECRET_KEYS = re.compile(
+    r"(?i)(pass(word|wd)?|secret|token|api[_-]?key|apikey|authorization|cookie|session(_string)?|"
+    r"credential|private[_-]?key|x-subscription-token|api[_-]?hash)"
+)
+
+
+def sanitize_payload(value: Any, _depth: int = 0) -> Any:
+    """Remove credenciais de estruturas antes de persistir (raw_data, metadata, audit).
+
+    Chaves com nome de credencial têm o valor substituído; textos passam por ``sanitize``.
+    """
+    if _depth > 20:
+        return "[profundidade máxima]"
+    if isinstance(value, dict):
+        clean = {}
+        for k, v in value.items():
+            key = str(k)
+            clean[key] = _REDACTED if _SECRET_KEYS.search(key) and v not in (None, "") else sanitize_payload(v, _depth + 1)
+        return clean
+    if isinstance(value, (list, tuple)):
+        return [sanitize_payload(v, _depth + 1) for v in value]
+    if isinstance(value, str):
+        return sanitize(value)
+    return value

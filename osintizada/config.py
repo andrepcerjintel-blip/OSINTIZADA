@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from osintizada.core.enums import QueryCategory, SearchMode
 
@@ -30,6 +30,8 @@ class SearchSettings(BaseModel):
     max_entities: int = 500
     max_results_per_provider: int = 50
     concurrency: int = 8
+    global_concurrency: int = 10  # teto global de chamadas simultâneas (todas as rodadas/providers)
+    hard_max_depth: int = 5       # nenhuma requisição pode ultrapassar esta profundidade
     provider_timeout_seconds: float = 30.0
     depth_priority_penalty: int = 10
 
@@ -44,20 +46,32 @@ class ModeProfile(BaseModel):
     query_categories: list[QueryCategory] = Field(default_factory=list)  # vazio = todas
     persist_case: bool = False
     enable_pivots: bool = False
+    # Orçamentos da investigação inteira (todas as profundidades). Esgotar ≠ erro: BUDGET_EXHAUSTED.
+    max_entities: int = 250
+    max_pivots: int = 40
+    max_provider_calls: int = 300
+    max_runtime_seconds: float = 600
 
 
 class ProviderSettings(BaseModel):
+    """Overrides por provider. Aceita nomes curtos: ``concurrency``, ``cache_ttl``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
     enabled: bool = True
     timeout_seconds: float | None = None
-    rate_limit_per_minute: int | None = None
-    max_concurrency: int | None = None
+    rate_limit_per_minute: float | None = None  # 0 desativa o limite padrão do provider
+    requests_per_second: float | None = None
+    max_concurrency: int | None = Field(default=None, validation_alias=AliasChoices("max_concurrency", "concurrency"))
     tier: int | None = None  # override do tier declarado pelo provider
-    cache_ttl_seconds: int | None = None
+    cache_ttl_seconds: int | None = Field(default=None, validation_alias=AliasChoices("cache_ttl_seconds", "cache_ttl"))
+    max_results: int | None = None
 
 
 class QueryBudget(BaseModel):
     costs: dict[str, int] = Field(
-        default_factory=lambda: {"local": 0, "web": 1, "api": 2, "browser": 3, "tor": 4, "paid": 5}
+        default_factory=lambda: {"local": 0, "dns": 0, "web": 1, "api": 1, "archive": 1, "browser": 3, "tor": 4,
+                                 "paid": 5}
     )
     max_cost_per_search: int = 200
 
@@ -69,12 +83,19 @@ class ResilienceSettings(BaseModel):
     breaker_failure_threshold: int = 5       # falhas consecutivas para abrir o circuito
     breaker_recovery_seconds: float = 120.0
     default_cooldown_seconds: float = 60.0   # pausa após 429 sem Retry-After
+    rate_limit_retries: int = 1              # re-tentativas após 429 (com Retry-After/backoff)
+    max_rate_limit_wait_seconds: float = 15  # espera maior que isso → não re-tenta, registra RATE_LIMITED
     default_cache_ttl_seconds: int = 3600
     max_response_bytes: int = 5 * 1024 * 1024
 
 
+class DatabaseSettings(BaseModel):
+    # DATABASE_URL (variável de ambiente) tem precedência. Nunca coloque senha aqui.
+    url: str = "sqlite:///data/osintizada.db"
+
+
 class NetworkSettings(BaseModel):
-    user_agent: str = "OSINTIZADA/0.2 (+investigation research tool)"
+    user_agent: str = "OSINTIZADA/0.3 (+investigation research tool)"
 
 
 class TorSettings(BaseModel):
@@ -86,26 +107,69 @@ def _default_modes() -> dict[SearchMode, ModeProfile]:
     C = QueryCategory
     return {
         SearchMode.QUICK: ModeProfile(
-            max_depth=0, max_queries=15, max_queries_per_identifier=8, concurrency=6, max_provider_tier=3,
-            timeout_seconds=15, query_categories=[C.EXACT, C.SOCIAL, C.TELEGRAM, C.CODE],
+            max_depth=1, max_queries=15, max_queries_per_identifier=8, concurrency=6, max_provider_tier=3,
+            timeout_seconds=15, query_categories=[C.EXACT, C.SOCIAL, C.TELEGRAM, C.CODE], enable_pivots=True,
+            max_entities=100, max_pivots=10, max_provider_calls=60, max_runtime_seconds=120,
         ),
         SearchMode.DEEP: ModeProfile(
-            max_depth=1, max_queries=60, max_queries_per_identifier=30, concurrency=8, max_provider_tier=4,
+            max_depth=2, max_queries=60, max_queries_per_identifier=30, concurrency=8, max_provider_tier=5,
             timeout_seconds=30, enable_pivots=True,
+            max_entities=250, max_pivots=40, max_provider_calls=300, max_runtime_seconds=600,
         ),
         SearchMode.INVESTIGATION: ModeProfile(
-            max_depth=2, max_queries=100, max_queries_per_identifier=40, concurrency=8, max_provider_tier=4,
+            max_depth=2, max_queries=100, max_queries_per_identifier=40, concurrency=8, max_provider_tier=5,
             timeout_seconds=45, persist_case=True, enable_pivots=True,
+            max_entities=500, max_pivots=60, max_provider_calls=500, max_runtime_seconds=900,
         ),
         SearchMode.DEEP_SWEEP: ModeProfile(
             max_depth=3, max_queries=250, max_queries_per_identifier=80, concurrency=12, max_provider_tier=5,
             timeout_seconds=60, persist_case=True, enable_pivots=True,
+            max_entities=1000, max_pivots=150, max_provider_calls=1500, max_runtime_seconds=1800,
         ),
         SearchMode.RAW: ModeProfile(
             max_depth=0, max_queries=1, max_queries_per_identifier=1, concurrency=4, max_provider_tier=3,
-            timeout_seconds=30, query_categories=[C.RAW],
+            timeout_seconds=30, query_categories=[C.RAW], max_entities=100, max_pivots=0,
+            max_provider_calls=10, max_runtime_seconds=60,
         ),
     }
+
+
+def _default_pivot_priorities() -> dict[str, int]:
+    # 3 = HIGH, 2 = MEDIUM, 1 = LOW, 0 = nunca pivotar
+    return {
+        "EMAIL": 3, "PHONE": 3, "DOMAIN": 3, "IP": 3, "CPF": 3, "CNPJ": 3, "CRYPTO_ADDRESS": 3,
+        "USERNAME": 2, "SOCIAL_ACCOUNT": 2, "SUBDOMAIN": 2, "ASN": 2, "TELEGRAM_USER": 2,
+        "TELEGRAM_CHANNEL": 2, "TELEGRAM_GROUP": 2, "NETWORK": 1, "URL": 1, "ORGANIZATION": 1,
+        "PERSON": 1, "HASH": 1, "CRYPTO_TRANSACTION": 1, "LOCATION": 0, "KEYWORD": 0, "DOCUMENT": 0,
+    }
+
+
+class PivotSettings(BaseModel):
+    priorities: dict[str, int] = Field(default_factory=_default_pivot_priorities)
+    min_confidence: float = 0.5  # entidades abaixo disso não geram pivô (hipóteses fracas)
+    skip_non_public_ips: bool = True
+    # Domínios de grandes plataformas/infra: gerariam investigação sobre a plataforma, não sobre o alvo.
+    blocklist_domains: list[str] = Field(default_factory=lambda: [
+        "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com",
+        "proton.me", "protonmail.com", "google.com", "github.com", "t.me", "telegram.me", "twitter.com", "x.com",
+        "instagram.com", "facebook.com", "youtube.com", "tiktok.com", "reddit.com", "linkedin.com",
+        "cloudflare.com", "cloudflare.net", "amazonaws.com", "awsdns.com", "azure.com", "akamai.net",
+        "akamaiedge.net", "googleusercontent.com", "iana-servers.net", "web.archive.org", "archive.org",
+    ])
+
+
+class CorrelationSettings(BaseModel):
+    weights: dict[str, int] = Field(default_factory=lambda: {
+        "same_telegram_id": 60, "same_phone": 50, "same_email": 45, "same_username_rare": 25,
+        "same_username_common": 10, "same_domain": 15, "same_name": 5, "same_location": 5,
+        "conflicting_country": -15, "conflicting_location": -10,
+    })
+    strong_signals: list[str] = Field(default_factory=lambda: ["same_telegram_id", "same_phone", "same_email"])
+    same_as_threshold: int = 80      # exige também ao menos um sinal forte
+    possible_threshold: int = 35
+    weak_threshold: int = 10
+    conflict_attributes: list[str] = Field(default_factory=lambda: [
+        "country", "location", "city", "display_name"])
 
 
 class Settings(BaseModel):
@@ -116,6 +180,9 @@ class Settings(BaseModel):
     tor: TorSettings = Field(default_factory=TorSettings)
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
     network: NetworkSettings = Field(default_factory=NetworkSettings)
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    pivots: PivotSettings = Field(default_factory=PivotSettings)
+    correlation: CorrelationSettings = Field(default_factory=CorrelationSettings)
 
     def mode(self, mode: SearchMode) -> ModeProfile:
         return self.modes[mode]

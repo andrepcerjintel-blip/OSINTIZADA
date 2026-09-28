@@ -20,7 +20,7 @@ import httpx
 
 from osintizada.net.ssrf import Resolver, UnsafeURLError, validate_url
 
-DEFAULT_USER_AGENT = "OSINTIZADA/0.2 (+investigation research tool)"
+DEFAULT_USER_AGENT = "OSINTIZADA/0.3 (+investigation research tool)"
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 

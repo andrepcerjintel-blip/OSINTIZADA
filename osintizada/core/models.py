@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -20,6 +20,7 @@ from osintizada.core.enums import (
     IdentifierType,
     ProviderStatus,
     RelationType,
+    SourceType,
 )
 
 
@@ -143,8 +144,21 @@ class Relationship(_Model):
 # --- Providers ---------------------------------------------------------------
 
 
+class EntityRef(_Model):
+    """Referência a uma entidade por tipo + valor (antes de existir no banco)."""
+
+    type: EntityType
+    value: str
+
+
 class ProviderResult(_Model):
-    """Item individual devolvido por um provider."""
+    """Item individual devolvido por um provider (``ProviderItem`` no contrato).
+
+    Relação padrão: ``entidade consultada --relation_to_query--> este item``.
+    ``source_entity`` troca a origem da relação (ex.: NETWORK --REGISTERED_TO--> ORGANIZATION
+    num resultado RDAP de IP) e ``relation_direction="reverse"`` inverte o sentido
+    (ex.: SUBDOMAIN --PART_OF--> DOMAIN consultado).
+    """
 
     type: EntityType
     value: str
@@ -161,6 +175,15 @@ class ProviderResult(_Model):
     classification: DataClassification = DataClassification.PUBLIC
     relation_to_query: RelationType | None = None
     relation_reason: str | None = None
+    relation_direction: Literal["forward", "reverse"] = "forward"
+    source_entity: EntityRef | None = None
+    # Atributos observados da entidade (país, nome do AS, TTL...). Append-only na persistência.
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    # Sobrepõe a natureza da fonte (ARCHIVE, TOR...); padrão derivado de ``classification``.
+    source_type: SourceType | None = None
+
+
+ProviderItem = ProviderResult
 
 
 class ProviderResponse(_Model):
@@ -173,6 +196,8 @@ class ProviderResponse(_Model):
     results: list[ProviderResult] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+    # Código estável da falha/decisão (ex.: HTTP_429, TIMEOUT, CIRCUIT_OPEN, BUDGET_EXHAUSTED).
+    error_code: str | None = None
 
     @property
     def duration_ms(self) -> float | None:

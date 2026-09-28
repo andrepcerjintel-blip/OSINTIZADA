@@ -10,8 +10,13 @@ import ipaddress
 import re
 import unicodedata
 
+from osintizada.core.domains import get_domain_parser
 from osintizada.core.enums import IdentifierType as T
-from osintizada.core.models import DetectionResult, IdentifierCandidate, NormalizedIdentifier
+from osintizada.core.models import (
+    DetectionResult,
+    IdentifierCandidate,
+    NormalizedIdentifier,
+)
 from osintizada.core.normalization import normalize
 from osintizada.core.urls import parse_social_url
 from osintizada.core.validators import (
@@ -20,7 +25,6 @@ from osintizada.core.validators import (
     is_valid_cpf,
     is_valid_hostname,
     only_digits,
-    registrable_domain,
 )
 
 # DDDs válidos no Brasil.
@@ -29,15 +33,6 @@ BR_DDDS = frozenset(
      41, 42, 43, 44, 45, 46, 47, 48, 49, 51, 53, 54, 55, 61, 62, 63, 64, 65, 66, 67, 68,
      69, 71, 73, 74, 75, 77, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92, 93, 94, 95,
      96, 97, 98, 99}
-)
-
-# TLDs frequentes: um host com TLD fora desta lista ainda é aceito, mas com
-# confiança menor (ex.: "john.doe" provavelmente é username).
-COMMON_TLDS = frozenset(
-    """com net org info biz edu gov mil int io co me app dev ai xyz online site top tech
-    store shop blog cloud live news club pro tv cc ws us uk de fr es it pt br ar mx cl co
-    pe uy py bo ve ec ru ua by kz cn jp kr in id vn th ph my sg au nz ca eu ch at be nl
-    se no dk fi pl cz sk hu ro bg gr tr il ir sa ae eg za ng ke ma to gg ly so su onion""".split()
 )
 
 _URL_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
@@ -197,17 +192,20 @@ class IdentifierEngine:
             return True
         if not is_valid_hostname(host) or host.replace(".", "").isdigit():
             return False
-        tld = host.rsplit(".", 1)[-1]
-        known = tld in COMMON_TLDS or tld.startswith("xn--")
+        parts = get_domain_parser().parse_domain(host)
+        if parts.is_public_suffix or parts.registrable_domain is None:
+            return False  # "com.br" sozinho é sufixo público, não domínio
+        known = parts.is_known_suffix
         base = 0.93 if known else 0.55
-        if registrable_domain(host) == host:
-            out.add(T.DOMAIN, base, "Hostname válido no nível de domínio registrável")
+        if parts.registrable_domain == host:
+            out.add(T.DOMAIN, base, f"Domínio registrável sob o sufixo público '{parts.suffix}'",
+                    suffix=parts.suffix)
         else:
             out.add(T.SUBDOMAIN, base - 0.03, "Hostname com rótulos abaixo do domínio registrável",
-                    registrable_domain=registrable_domain(host))
+                    registrable_domain=parts.registrable_domain, suffix=parts.suffix)
             out.add(T.HOSTNAME, base - 0.3, "Pode ser hostname específico de serviço")
         if not known:
-            out.add(T.USERNAME, 0.5, "TLD incomum: pode ser username com ponto")
+            out.add(T.USERNAME, 0.5, "Sufixo fora da Public Suffix List: pode ser username com ponto")
         return True
 
     @staticmethod

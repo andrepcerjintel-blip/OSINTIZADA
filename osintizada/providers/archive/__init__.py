@@ -1,0 +1,1 @@
+"""Archive intelligence (dados HISTÓRICOS)."""

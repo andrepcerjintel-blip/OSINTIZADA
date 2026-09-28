@@ -7,8 +7,17 @@ Nenhuma rede é usada e todo resultado é classificado como DERIVED.
 
 from __future__ import annotations
 
-from osintizada.core.enums import DataClassification, EntityType, IdentifierType, RelationType
-from osintizada.core.models import NormalizedIdentifier, ProviderResult, social_account_value
+from osintizada.core.enums import (
+    DataClassification,
+    EntityType,
+    IdentifierType,
+    RelationType,
+)
+from osintizada.core.models import (
+    NormalizedIdentifier,
+    ProviderResult,
+    social_account_value,
+)
 from osintizada.core.normalization import normalize_host
 from osintizada.core.urls import parse_social_url
 from osintizada.core.validators import registrable_domain
@@ -32,6 +41,9 @@ class IdentifierAnalysisProvider(LocalProvider):
          IdentifierType.SUBDOMAIN, IdentifierType.HOSTNAME}
     )
     default_timeout_seconds = 5.0
+
+    async def _healthcheck(self) -> str:
+        return "processamento local (sem rede)"
 
     async def _search(self, identifier: NormalizedIdentifier, query: str | None) -> list[ProviderResult]:
         if identifier.type == IdentifierType.EMAIL:

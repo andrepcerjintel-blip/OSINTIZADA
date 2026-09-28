@@ -16,20 +16,6 @@ _DIGITS = re.compile(r"\D+")
 _DNS_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 _TLD = re.compile(r"^(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$")
 
-# Sufixos públicos compostos mais comuns. Heurística até integrarmos a
-# Public Suffix List completa (ver docs/ARCHITECTURE.md, limitações).
-MULTI_PART_SUFFIXES: frozenset[str] = frozenset(
-    {
-        "com.br", "net.br", "org.br", "gov.br", "edu.br", "mil.br", "jus.br",
-        "leg.br", "mp.br", "art.br", "adv.br", "eng.br", "med.br", "ind.br",
-        "inf.br", "blog.br", "app.br", "tv.br", "def.br", "coop.br",
-        "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au",
-        "com.ar", "com.mx", "com.pt", "co.jp", "co.in", "co.za", "com.cn",
-        "com.tr", "com.co", "com.pe", "com.uy", "com.py", "com.ve",
-    }
-)
-
-
 def only_digits(value: str) -> str:
     return _DIGITS.sub("", value)
 
@@ -75,12 +61,28 @@ def is_valid_hostname(value: str) -> bool:
     return bool(_TLD.match(labels[-1]))
 
 
+_DNS_NAME_LABEL = re.compile(r"^(?!-)[a-z0-9_-]{1,63}(?<!-)$")
+
+
+def is_valid_dns_name(value: str) -> bool:
+    """Nome DNS genérico: como hostname, mas aceita '_' (ex.: _spf.google.com, _dmarc.x.com)."""
+    name = value.rstrip(".").lower()
+    if not name or len(name) > 253 or "." not in name:
+        return False
+    labels = name.split(".")
+    return all(_DNS_NAME_LABEL.match(lbl) for lbl in labels) and bool(_TLD.match(labels[-1]))
+
+
 def registrable_domain(host: str) -> str:
-    """Retorna o domínio registrável aproximado (eTLD+1) de um hostname."""
-    labels = host.rstrip(".").lower().split(".")
-    if len(labels) >= 3 and ".".join(labels[-2:]) in MULTI_PART_SUFFIXES:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+    """Domínio registrável (eTLD+1) segundo a Public Suffix List.
+
+    Mantido por compatibilidade; se o host não tiver domínio registrável (ex.: é
+    ele próprio um sufixo público), devolve o host normalizado.
+    """
+    from osintizada.core.domains import get_domain_parser
+
+    parts = get_domain_parser().parse_domain(host)
+    return parts.registrable_domain or parts.hostname
 
 
 def is_ip(value: str) -> bool:

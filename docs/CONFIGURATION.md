@@ -36,16 +36,17 @@ resilience:
   max_response_bytes: 5242880   # respostas maiores são recusadas
 
 network:
-  user_agent: "OSINTIZADA/0.2 (+investigation research tool)"
+  user_agent: "OSINTIZADA/0.3 (+investigation research tool)"
 
 providers:
   <nome.do.provider>:
     enabled: true
     timeout_seconds: 20
     tier: 2                     # sobrescreve o tier declarado
-    rate_limit_per_minute: 30   # token bucket local; 0 desativa o padrão do provider
-    max_concurrency: 2          # chamadas simultâneas deste provider
-    cache_ttl_seconds: 3600     # 0 desativa cache
+    requests_per_second: 2      # ou rate_limit_per_minute; aplicado ANTES da requisição; 0 desativa
+    concurrency: 2              # (= max_concurrency) chamadas simultâneas deste provider
+    cache_ttl: 3600             # (= cache_ttl_seconds) 0 desativa cache
+    max_results: 200            # itens aceitos por resposta
 
 modes:
   quick:                        # também: deep, investigation, deep_sweep, raw
@@ -55,15 +56,71 @@ modes:
     query_categories: [exact, social, telegram, code]   # vazio = todas
 ```
 
-## Modos
+## Modos e orçamentos
 
-| Modo | depth | consultas | tier máx. | Observação |
-|---|---|---|---|---|
-| quick | 0 | 15 | 3 | poucas categorias, rápido |
-| deep | 1 | 60 | 4 | pivôs habilitados (Fase 6) |
-| investigation | 2 | 100 | 4 | persistência em Case (Fase 7) |
-| deep_sweep | 3 | 250 | 5 | Tor só se `tor.mode` habilitar |
-| raw | 0 | 1 | 3 | consulta manual do investigador |
+| Modo | max_depth | tier máx. | max_entities | max_pivots | max_provider_calls | max_runtime |
+|---|---|---|---|---|---|---|
+| quick | 1 | 3 (sem archive) | 100 | 10 | 60 | 120 s |
+| deep | 2 | 5 | 250 | 40 | 300 | 600 s |
+| investigation | 2 | 5 | 500 | 60 | 500 | 900 s |
+| deep_sweep | 3 | 5 | 1000 | 150 | 1500 | 1800 s |
+| raw | 0 | 3 | 100 | 0 | 10 | 60 s |
+
+Todos os modos persistem em Case. Os valores podem ser sobrepostos por requisição (`max_depth`,
+`max_entities`, `max_pivots`, `max_provider_calls`, `max_runtime_seconds`), sempre limitados por
+`search.hard_max_depth`. Esgotar um orçamento registra `BUDGET_EXHAUSTED` no audit e no resumo e **não** é
+tratado como erro.
+
+**Profundidade:** `depth=0` é o seed. `depth=1` são os resultados diretos do seed, `depth=2` os derivados de
+depth 1, e assim por diante. Entidades com `depth ≤ max_depth` são investigadas. As de profundidade maior
+são armazenadas, mas não pivotadas. Fingerprints visitados e agendados impedem loops.
+
+## Pivôs
+
+```yaml
+pivots:
+  min_confidence: 0.5          # hipóteses abaixo disso não viram pivô (seeds sempre viram)
+  skip_non_public_ips: true
+  priorities: {EMAIL: 3, PHONE: 3, DOMAIN: 3, IP: 3, USERNAME: 2, SUBDOMAIN: 2, ASN: 2, URL: 1, LOCATION: 0}
+  blocklist_domains: [gmail.com, github.com, cloudflare.com, amazonaws.com, ...]
+```
+
+3 = HIGH, 2 = MEDIUM, 1 = LOW, 0 = nunca. Os candidatos são ordenados por prioridade e confiança e cortados
+por `max_pivots`. A blocklist evita investigar a plataforma em vez do alvo (ex.: nameservers da
+Cloudflare). O investigador pode bloquear valores por requisição (`blocked_values`).
+
+## Correlação
+
+```yaml
+correlation:
+  weights: {same_telegram_id: 60, same_phone: 50, same_email: 45, same_username_rare: 25,
+            same_username_common: 10, same_domain: 15, same_name: 5, same_location: 5,
+            conflicting_country: -15, conflicting_location: -10}
+  strong_signals: [same_telegram_id, same_phone, same_email]
+  same_as_threshold: 80        # + exige sinal forte → SAME_AS
+  possible_threshold: 35       # → POSSIBLY_SAME_AS
+  weak_threshold: 10           # → registrado como WEAK, sem relação
+  conflict_attributes: [country, location, city, display_name]
+```
+
+## Banco de dados
+
+- `DATABASE_URL` (env) > `database.url` > `sqlite:///data/osintizada.db`.
+- PostgreSQL: `pip install "osintizada[postgres]"` e `DATABASE_URL=postgresql+psycopg://…`.
+- Migrações: `osintizada db upgrade` (Alembic). A API aplica as migrações na inicialização (`OSINTIZADA_AUTO_MIGRATE=0` desativa).
+
+## Variáveis de ambiente
+
+| Variável | Uso |
+|---|---|
+| `DATABASE_URL` | conexão do banco |
+| `OSINTIZADA_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
+| `BRAVE_SEARCH_API_KEY`, `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | buscadores |
+| `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` | Telegram |
+| `OSINTIZADA_DNS_SERVERS` | resolvers DNS (padrão: sistema) |
+| `OSINTIZADA_RDAP_BASE` | bootstrap RDAP (padrão: https://rdap.org) |
+| `OSINTIZADA_PSL_FILE` | Public Suffix List mais recente que a embutida |
+| `OSINTIZADA_CONFIG`, `OSINTIZADA_ENV_FILE` | caminhos alternativos de configuração |
 
 ## Secrets
 
@@ -76,8 +133,10 @@ modes:
 
 | Situação | Comportamento |
 |---|---|
-| HTTP 5xx, erro de conexão | retry com backoff exponencial + jitter (`max_retries`) |
-| HTTP 429 | **não** re-tenta; status `RATE_LIMITED`, provider entra em pausa pelo `Retry-After` (ou `default_cooldown_seconds`); chamadas durante a pausa retornam `RATE_LIMITED` sem tocar o serviço |
+| timeout, HTTP 408/502/503/504, erro de rede | retry com backoff exponencial + jitter (`max_retries`) |
+| HTTP 400/401/403/404/500 | sem retry |
+| HTTP 429 | até `rate_limit_retries` novas tentativas se `Retry-After` (ou backoff) ≤ `max_rate_limit_wait_seconds`; senão `RATE_LIMITED` e o provider entra em pausa; chamadas durante a pausa retornam `RATE_LIMITED` sem tocar o serviço |
+| Concorrência | semáforo global (`search.global_concurrency`) + do modo + por provider (`concurrency`) |
 | Falhas consecutivas ≥ limite | circuit breaker abre; chamadas retornam `SKIPPED` até o período de recuperação |
 | Mesma consulta no mesmo provider | servida do cache (`metadata.cache_hit = true`); falhas nunca são cacheadas |
 | Timeout | `TIMEOUT` (conta para o circuit breaker) |

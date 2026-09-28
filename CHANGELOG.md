@@ -2,6 +2,53 @@
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [0.3.0] — 2026-09-28 — Fase 3: primeiro ciclo investigativo real
+
+### Adicionado
+- **Public Suffix List oficial** (`core/domains.py`, pacote `publicsuffixlist`, seções ICANN + PRIVATE):
+  `DomainParser.parse_domain()` → hostname, subdomain, registrable_domain, suffix. `OSINTIZADA_PSL_FILE`
+  permite uma lista mais recente.
+- **Persistência** SQLAlchemy 2.0 (SQLite em dev, PostgreSQL em prod) com migração Alembic `0001_initial`:
+  cases, investigations, case_inputs (seeds `USER_INPUT`), entities, evidence, relationships +
+  relationship_evidence, search_executions, audit_log, pivots, correlations, conflicts.
+- **Repositories** (única camada com acesso ao banco) e **canonicalização** central
+  (`normalize_email/phone/domain/ip/username/url`); fingerprint de entidade `sha256(TIPO:valor)`.
+- **Providers reais**: `infra.dns` (A/AAAA/CNAME/MX/NS/TXT, SPF, PTR, IP→ASN e nome do AS via Team Cymru),
+  `infra.rdap` (IP/ASN/domínio via rdap.org, sem inventar dado redigido), `infra.crtsh` (subdomínios por
+  Certificate Transparency), `archive.wayback` (Wayback CDX, sempre `HISTORICAL_DATA`),
+  `social.telegram` (Telethon; Telegram ID estável + username mutável; `NOT_CONFIGURED` sem credenciais).
+- **InvestigationService**: Case → seeds → rodadas por profundidade → persistência → pivôs → correlação,
+  com orçamentos `max_depth`, `max_entities`, `max_pivots`, `max_provider_calls` e `max_runtime`
+  (`BUDGET_EXHAUSTED` sem erro) e anti-loop por fingerprints visitados e agendados.
+- **PivotEngine**: prioridades HIGH/MEDIUM/LOW configuráveis, confiança mínima, blocklist de plataformas,
+  bloqueio por investigador, IPs não públicos ignorados; cada decisão registrada com motivo.
+- **CorrelationEngine**: score determinístico com sinais positivos/negativos e evidências; `SAME_AS` só com
+  sinal forte (Telegram ID, telefone, email); **ConflictRecord** (`CONFLICTING_EVIDENCE`) para atributos
+  divergentes, nunca sobrescritos.
+- **API FastAPI**: cases, investigate (background), entities (com "como chegamos aqui?"), evidence,
+  relationships, searches, audit, pivots, correlations, conflicts, providers, providers/health; token
+  opcional (`OSINTIZADA_API_TOKEN`).
+- **CLI**: `investigate`, `cases`, `case`, `serve`, `db upgrade`, `--log-level`.
+- **Logs estruturados** JSON com `case_id` propagado por contextvar e sanitização automática;
+  `sanitize_payload` remove credenciais de raw_data, metadata e audit.
+- Contrato de providers: `ProviderItem`, `EntityRef` (`source_entity`), `relation_direction`, `attributes`,
+  `source_type`, `error_code`; exceções `ProviderTimeout`, `ProviderRateLimited`,
+  `ProviderAuthenticationError`, `ProviderNotConfigured`, `ProviderUnavailable`.
+- Configuração por provider: `requests_per_second`, `concurrency`, `cache_ttl`, `max_results`; teto global
+  de concorrência (`search.global_concurrency`).
+- 108 novos testes (297 no total), incluindo o fluxo completo domínio → DNS → IP → pivô → RDAP → ASN/ORG.
+
+### Alterado
+- Retry: apenas timeout, 408, 502/503/504 e erros de rede; 400/401/403/404/500 nunca são re-tentados; 429 é
+  re-tentado uma vez quando o `Retry-After` é curto, senão `RATE_LIMITED` com pausa do provider.
+- Modos: QUICK com depth 1, DEEP com depth 2 e tier 5 (inclui archive), todos com orçamentos de investigação.
+- Custos do query budget: `dns: 0`, `api: 1`, `archive: 1`.
+- `registrable_domain()` delega à PSL; a lista manual de sufixos e a lista de TLDs foram removidas.
+
+### Corrigido
+- Nomes DNS com `_` (ex.: `_spf.google.com`) eram descartados como hostnames inválidos.
+- `row_to_dict` confundia a coluna `metadata` com o `MetaData` do SQLAlchemy.
+
 ## [0.2.0] — 2026-09-28 — Fase 2a–2c: resiliência, extractors e search engines
 
 ### Adicionado
