@@ -62,6 +62,7 @@ cache:
   prefix: osintizada
 
 jobs:
+  executor: auto                # auto (Redis se REDIS_URL configurada, senão o próprio servidor) | redis | embedded
   queue_name: osintizada
   heartbeat_interval_seconds: 15
   stale_after_seconds: 90       # RUNNING sem heartbeat além disso → INTERRUPTED → RETRYING/FAILED

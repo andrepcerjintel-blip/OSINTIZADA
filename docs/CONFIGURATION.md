@@ -51,6 +51,7 @@ cache:
   prefix: osintizada            # prefixo de TODAS as chaves Redis (nome legado mantido: chaves existentes)
 
 jobs:
+  executor: auto                # auto | redis | embedded (RINO_EXECUTOR tem precedência)
   queue_name: osintizada        # nome legado mantido: jobs já enfileirados
   heartbeat_interval_seconds: 15
   stale_after_seconds: 90       # heartbeat mais antigo → INTERRUPTED → RETRYING/FAILED
@@ -153,6 +154,7 @@ correlation:
 | `DATABASE_URL` | conexão do banco |
 | `REDIS_CACHE_URL` | opcional: Redis/DB só para o cache (ex.: `maxmemory-policy allkeys-lru`); ausente → `REDIS_URL` |
 | `REDIS_URL` | Redis (fila, locks, cache, heartbeats). `rediss://:senha@host:6380/0` para TLS. Sem ela: jobs ficam `PENDING` (`QUEUE_UNAVAILABLE`) e `rino worker` se recusa a iniciar |
+| `RINO_EXECUTOR` | quem executa os Jobs: `auto` (Redis se `REDIS_URL` configurada, senão o próprio servidor), `redis` ou `embedded` |
 | `RINO_AUTO_MIGRATE` | `1` (padrão) aplica migrações na subida; `0` exige banco já migrado (falha com mensagem clara) |
 | `RINO_TEST_DATABASE_URL` | só testes: roda `tests/test_jobs.py` contra PostgreSQL real (schema recriado) |
 | `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | só `docker-compose.yml` (obrigatórias; nunca versionadas) |

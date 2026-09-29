@@ -4,6 +4,22 @@ O projeto se chamava OSINTIZADA até a versão 0.4.1. As entradas antigas mantê
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [0.6.0] — 2026-09-29 — Pesquisa pelo navegador, executada no servidor
+
+### Adicionado
+- **Executor embutido** (`osintizada/jobs/embedded.py`): sem Redis, o próprio `rino serve` executa os Jobs.
+  O banco é a fila (o Job fica `QUEUED` no banco, persistente). Reaproveita o `JobRunner` dos workers
+  (claim atômico, tentativas, heartbeat, checkpoints, retry, cancelamento). O reconciliador roda no próprio
+  ciclo: um Job interrompido por queda ou encerramento do servidor é retomado do último checkpoint na próxima
+  subida. Um Job por vez; os demais aguardam em ordem de chegada.
+- Seleção por `jobs.executor` / `RINO_EXECUTOR`: `auto` (padrão: Redis se `REDIS_URL` estiver configurada,
+  senão embutido), `redis` ou `embedded`. Funciona no Windows sem Redis e sem WSL.
+- **Tela de pesquisa** em `GET /`: alvos + modo → a investigação roda no servidor, com progresso ao vivo,
+  cancelamento, tabela de entidades com filtros, relatório HTML/JSON/CSV e lista de investigações recentes.
+  Campo de token quando `RINO_API_TOKEN` estiver definido.
+- `/health`: `worker.mode = "EMBEDDED"` e `queue.backend = "database"` no modo embutido.
+- `tests/test_embedded.py` (6 testes).
+
 ## [0.5.0] — 2026-09-29 — Branding Migration: OSINTIZADA → RINO
 
 ### Alterado

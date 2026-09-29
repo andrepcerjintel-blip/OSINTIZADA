@@ -9,6 +9,7 @@
 | 0.1.0 | 1 — Core | identificadores, normalização, modelos, planner, evidência, contrato de providers |
 | 0.2.0 | 2a–2c | resiliência (rate limit, retry, breaker, cache), SSRF, extractors, search engines |
 | 0.3.0 | 3 — Ciclo investigativo real | PSL, persistência, Case, providers de infraestrutura, Pivot/Correlation, API |
+| 0.6.0 | Uso pelo navegador | tela de pesquisa em `GET /` e executor embutido (sem Redis) |
 | 0.5.0 | Identidade | projeto renomeado de OSINTIZADA para **RINO**; logo oficial integrada (ver §11) |
 | 0.4.0 | 4 — Resiliência, jobs, segurança | jobs persistentes + worker + recuperação, Redis, SSRF com pinning, avatar, timeline, exports |
 
@@ -101,6 +102,14 @@ tinham terminado (inclusive as feitas antes da queda, sem checkpoint) são recon
 **Status do Case** é derivado dos Jobs de investigação: ativo → `RUNNING`; último `COMPLETED`/`FAILED` → idem;
 cancelado/interrompido → `OPEN`.
 
+**Executor embutido (sem Redis).** Com `jobs.executor: embedded` (ou `auto` sem `REDIS_URL`), o próprio
+`rino serve` executa os Jobs numa thread. A fila é o banco: a API grava o Job `QUEUED` e o executor pega o
+mais antigo, com o mesmo `JobRunner` (claim, tentativa, heartbeat, checkpoints, retry, cancelamento). O
+reconciliador roda no ciclo do executor, a cada 5 s no máximo, então um Job interrompido pelo encerramento do
+servidor vira `INTERRUPTED` → `RETRYING` e é retomado do checkpoint na próxima subida (depois de
+`stale_after_seconds`). Limites: um Job por vez e execução no processo da API. É indicado para uma máquina
+(ex.: Windows sem Redis). Para escala, use Redis + `rino worker`.
+
 ## 3.2 Redis: o que guarda (e o que não guarda)
 
 | Uso | Chave | Perda do Redis |
@@ -190,6 +199,7 @@ osintizada/
     worker.py                    JobRunner (claim, lock, tentativa, handlers) + run_worker (RQ SimpleWorker)
     recovery.py                  JobRecoveryService (reconciliador)
     control.py / heartbeat.py    JobExecutionControl, heartbeat de job e de worker
+    embedded.py                  executor embutido: fila no banco, executado pelo próprio `rino serve`
   infrastructure/                redis_client, redis_cache (RedisCacheBackend), locks, queue (RQJobQueue)
   images/                        hashing (SHA256/pHash/dHash), store (ArtifactStore), fetch, results
   timeline/ · exports/           TimelineService, ExportService (JSON/CSV/HTML)
@@ -197,7 +207,7 @@ osintizada/
   branding.py                    identidade RINO: nome, tagline, paleta, logo, variáveis RINO_/OSINTIZADA_
   assets/                        logo RINO redimensionada (256 px relatórios/tela inicial, 64 px ícone)
   resilience/ · net/ (SSRF com pinning) · extractors/ · observability/ (logs, métricas)
-  api/app.py                     RINO API (FastAPI); api/pages.py: tela inicial
+  api/app.py                     RINO API (FastAPI); api/pages.py: tela de pesquisa (GET /)
 ```
 
 ## 5. Modelo de dados
@@ -277,7 +287,7 @@ osintizada/
 | 57 | Export | IMPLEMENTADO | JSON/CSV/HTML como job; GraphML pendente |
 | 58 | Histórico de buscas | IMPLEMENTADO | `search_executions` |
 | 62 | Observabilidade | IMPLEMENTADO | logs com case_id/job_id/provider, `/metrics`, `/health`, SSE |
-| 63 | Testes | IMPLEMENTADO | 420 testes, rede e Redis simulados; jobs também em PostgreSQL |
+| 63 | Testes | IMPLEMENTADO | 426 testes, rede e Redis simulados; jobs também em PostgreSQL |
 | 68–70 | RAW / multi-input / seeds | IMPLEMENTADO | — |
 | 76 | "Como chegamos aqui?" | IMPLEMENTADO | `GET /cases/{id}/entities/{entity_id}` |
 | 78 | Controle humano | IMPLEMENTADO | bloqueio de valores/providers, limites, cancelamento e retry via API |
@@ -329,7 +339,7 @@ Versões apenas redimensionadas ficam em `osintizada/assets/`.
 
 | Onde a identidade aparece | Como |
 |---|---|
-| Tela inicial da API (`GET /`) | logo, nome, tagline, estado de API/banco/Redis/worker |
+| Tela de pesquisa (`GET /`) | logo, nome, tagline, estado dos componentes, pesquisa e resultados |
 | Swagger (`/docs`) e ReDoc (`/redoc`) | título **RINO API**, favicon; logo no ReDoc (`x-logo`) |
 | `/health` | `product: "RINO"`, `api.name: "RINO API"` (demais campos inalterados) |
 | Relatório HTML | cabeçalho grafite com logo embutida (relatório autocontido) e borda azul elétrico |

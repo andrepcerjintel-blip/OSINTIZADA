@@ -27,7 +27,19 @@ tudo com auditoria.
 - **Análise**: correlação visual de avatares (SHA256/pHash/dHash), timeline pelo momento do fato, exports
   JSON/CSV/HTML.
 
-## Estado atual (v0.5.0)
+## Uso rápido: pesquisa pelo navegador (inclusive Windows, sem Redis)
+
+```bash
+rino serve
+```
+
+Abra **http://127.0.0.1:8000**, digite os alvos (domínio, IP, e-mail, usuário…), escolha o modo e clique
+em **Investigar**. A pesquisa roda no próprio servidor: o progresso aparece ao vivo, e depois dá para
+filtrar as entidades e gerar o relatório HTML, JSON ou CSV. Sem `REDIS_URL`, o servidor usa o **executor
+embutido** (fila no banco). Se o servidor for encerrado no meio de uma pesquisa, ela é retomada do último
+checkpoint quando ele voltar. Para vários workers em paralelo, use Redis + `rino worker` (abaixo).
+
+## Estado atual (v0.6.0)
 
 | Componente | Estado |
 |---|---|
@@ -44,6 +56,7 @@ tudo com auditoria.
 | Pivot Engine, Correlation Engine (inclui avatar SHA256/pHash/dHash) + contradições | ✅ |
 | Timeline (momento do fato) e exports JSON/CSV/HTML | ✅ |
 | API FastAPI (SSE, `/health`, `/metrics`) + CLI + logs JSON com `case_id`/`job_id` | ✅ |
+| Tela de pesquisa no navegador + executor embutido (sem Redis) | ✅ |
 | UI, Tor, Credilink, GitHub, Brasil OSINT | ⏳ ver [roadmap](docs/ARCHITECTURE.md#9-roadmap) |
 
 Nenhum resultado é simulado. Provider sem credencial aparece como `NOT_CONFIGURED`, falha aparece como
@@ -101,7 +114,7 @@ curl -N localhost:8000/jobs/<job_id>/events   # progresso ao vivo (SSE)
 
 | Rota | Conteúdo |
 |---|---|
-| `GET /` | tela inicial RINO (logo, estado de API/banco/Redis/worker, links da documentação) |
+| `GET /` | tela de pesquisa RINO: nova investigação, progresso ao vivo, resultados, relatórios |
 | `GET /docs`, `GET /redoc`, `GET /openapi.json` | documentação da **RINO API** |
 | `GET /health`, `GET /metrics` | api, database, redis, worker (`ONLINE`/`STALE`/`OFFLINE`), fila; métricas Prometheus |
 | `POST /cases`, `GET /cases`, `GET /cases/{id}` | Cases (com seeds, execuções e contagens) |
@@ -127,6 +140,7 @@ CLI: `rino worker [--burst]`, `rino worker-status [--local] [--require-online]`,
 | `REDIS_URL` (+ `REDIS_CACHE_URL` opcional) | fila, locks, cache compartilhado, heartbeats |
 | `RINO_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
 | `RINO_CONFIG` | arquivo de configuração (padrão `config/rino.yaml`) |
+| `RINO_EXECUTOR` | `auto` (padrão), `redis` (workers separados) ou `embedded` (o servidor executa) |
 | `BRAVE_SEARCH_API_KEY`, `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` | buscadores |
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` | Telegram |
 
@@ -150,7 +164,7 @@ Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Testes
 
 ```bash
-pytest          # 420 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
+pytest          # 426 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
 # mesmos testes de jobs contra PostgreSQL real (banco descartável — o schema é recriado):
 RINO_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/test_jobs.py
 ```

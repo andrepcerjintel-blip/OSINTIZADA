@@ -126,6 +126,10 @@ class CacheSettings(BaseModel):
 
 
 class JobSettings(BaseModel):
+    # Quem executa os Jobs: "redis" (fila RQ + processos `rino worker`), "embedded" (o próprio
+    # `rino serve` executa, fila no banco — uma máquina, sem Redis) ou "auto" (redis se REDIS_URL
+    # estiver configurada; senão embedded). Variável RINO_EXECUTOR tem precedência.
+    executor: str = "auto"
     queue_name: str = "osintizada"
     heartbeat_interval_seconds: float = 15.0   # JOB_HEARTBEAT_INTERVAL
     stale_after_seconds: float = 90.0          # heartbeat mais antigo que isso → INTERRUPTED

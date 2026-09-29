@@ -94,34 +94,45 @@ class EntityFlags(BaseModel):
 
 
 def build_default_services() -> tuple[InvestigationService, JobService, Any]:
-    """Montagem de produção: banco (migrações), Redis opcional, cache configurado, fila RQ."""
+    """Montagem de produção: banco (migrações), Redis opcional, cache configurado e fila.
+
+    Fila: RQ/Redis (workers separados) ou, sem REDIS_URL (ou com RINO_EXECUTOR=embedded), a fila no
+    banco executada pelo próprio servidor — ver ``osintizada.jobs.embedded``.
+    """
     from osintizada.bootstrap import validate_database
     from osintizada.config import get_settings
     from osintizada.infrastructure.queue import RQJobQueue
     from osintizada.infrastructure.redis_cache import build_runtime
-    from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis
+    from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis, redis_url
+    from osintizada.jobs.embedded import EXECUTOR_EMBEDDED, DatabaseJobQueue, resolve_executor
     from osintizada.orchestration.source_orchestrator import SourceOrchestrator
 
     settings = get_settings()
     db = Database()
     validate_database(db, auto_migrate=branding_env("AUTO_MIGRATE", "1") != "0")
+    mode = resolve_executor(settings, redis_configured=bool(redis_url(settings)))
+    redis = None
     try:
         redis = create_redis(settings=settings)
         redis.ping()
     except RedisNotConfigured:
         redis = None
-        log.warning("REDIS_URL não configurada: jobs ficarão PENDING (QUEUE_UNAVAILABLE)")
     except Exception as exc:  # noqa: BLE001 - API sobe; health mostra Redis indisponível
         log.warning("Redis indisponível na inicialização", extra={"error": type(exc).__name__})
     runtime = build_runtime(settings, redis)
     orchestrator = SourceOrchestrator(settings=settings, runtime=runtime)
     service = InvestigationService(db, orchestrator, settings)
-    queue = RQJobQueue(redis, settings.jobs.queue_name) if redis is not None else None
+    if mode == EXECUTOR_EMBEDDED:
+        log.info("executor embutido: o servidor executa os jobs (fila no banco, sem Redis)")
+        queue = DatabaseJobQueue(db)
+    else:
+        queue = RQJobQueue(redis, settings.jobs.queue_name) if redis is not None else None
     return service, JobService(db, settings, queue, redis), redis
 
 
 def create_app(service: InvestigationService | None = None, jobs: JobService | None = None,
-               redis: Any = None, reconcile_on_startup: bool = True) -> FastAPI:
+               redis: Any = None, reconcile_on_startup: bool = True,
+               embedded_executor: bool = True) -> FastAPI:
     if service is None:
         service, jobs, redis = build_default_services()
     if jobs is None:
@@ -138,11 +149,31 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
                   docs_url=None, redoc_url=None)  # /docs e /redoc servidos abaixo com a identidade RINO
     app.state.service, app.state.jobs, app.state.redis = service, jobs, redis
 
+    from osintizada.jobs.embedded import DatabaseJobQueue, build_embedded_executor
+
+    executor = None
+    if embedded_executor and isinstance(jobs.queue, DatabaseJobQueue):
+        executor = build_embedded_executor(service, jobs)
+    app.state.executor = executor
+
+    def worker_info() -> dict:
+        return executor.status() if executor is not None else workers_status(redis, settings.cache.prefix)
+
+    @app.on_event("startup")
+    def start_embedded_executor() -> None:
+        if executor is not None:
+            executor.start()
+
+    @app.on_event("shutdown")
+    def stop_embedded_executor() -> None:
+        if executor is not None:
+            executor.stop()
+
     @app.on_event("startup")
     def reconcile_at_startup() -> None:
         # Reconciliação cuidadosa: decide por heartbeat/fila/checkpoint, nunca "zera" Cases RUNNING.
-        if not reconcile_on_startup or jobs.queue is None:
-            return
+        if not reconcile_on_startup or jobs.queue is None or executor is not None:
+            return  # o executor embutido reconcilia no próprio ciclo
         from osintizada.jobs.recovery import JobRecoveryService
 
         try:
@@ -214,16 +245,18 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
     def health() -> dict:
         database = database_status(db)
         redis_info = redis_status(redis)
-        worker = workers_status(redis, settings.cache.prefix)
+        worker = worker_info()
         queue: dict[str, Any] = {"status": "QUEUE_UNAVAILABLE"}
-        if jobs.queue is not None and redis_info["status"] == "ok":
+        embedded = isinstance(jobs.queue, DatabaseJobQueue)
+        if jobs.queue is not None and (embedded or redis_info["status"] == "ok"):
             try:
-                queue = {"status": "ok", "size": jobs.queue.size()}
+                queue = {"status": "ok", "backend": "database" if embedded else "redis", "size": jobs.queue.size()}
             except Exception as exc:  # noqa: BLE001
                 queue = {"status": "UNAVAILABLE", "error": type(exc).__name__}
         with db.session() as s:
             job_counts = JobRepository(s).count_by_status()
-        ok = (database["status"] == "ok" and redis_info["status"] == "ok" and worker["status"] == "ONLINE")
+        ok = (database["status"] == "ok" and worker["status"] == "ONLINE"
+              and (embedded or redis_info["status"] == "ok"))
         return {"status": "ok" if ok else "degraded", "product": PRODUCT_NAME,
                 "api": {"status": "ok", "name": f"{PRODUCT_NAME} API", "version": __version__},
                 "database": database, "redis": redis_info, "worker": worker, "queue": queue, "jobs": job_counts}
@@ -233,7 +266,7 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
         with db.session() as s:
             counts = JobRepository(s).count_by_status()
         gauges = {f'jobs{{status="{status.value}"}}': counts.get(status.value, 0) for status in JobStatus}
-        worker = workers_status(redis, settings.cache.prefix)
+        worker = worker_info()
         gauges["workers_online"] = sum(1 for w in worker["workers"] if w["status"] == "ONLINE")
         return PlainTextResponse(metrics.render(gauges), media_type="text/plain; version=0.0.4")
 
@@ -299,7 +332,7 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
         warnings = []
         if job.get("dispatch") != "QUEUED":
             warnings.append("QUEUE_UNAVAILABLE")
-        if workers_status(redis, settings.cache.prefix)["status"] != "ONLINE":
+        if worker_info()["status"] != "ONLINE":
             warnings.append("WORKER_UNAVAILABLE")
         return {"case_id": job["case_id"], "job_id": job["id"], "job_type": job["job_type"],
                 "status": job["status"], "warnings": warnings}
