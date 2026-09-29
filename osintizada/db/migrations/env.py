@@ -1,4 +1,4 @@
-"""Ambiente Alembic do OSINTIZADA."""
+"""Ambiente Alembic do RINO."""
 
 from __future__ import annotations
 

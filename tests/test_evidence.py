@@ -1,4 +1,9 @@
-from osintizada.core.enums import DataClassification, EntityOrigin, EntityType, ProviderStatus
+from osintizada.core.enums import (
+    DataClassification,
+    EntityOrigin,
+    EntityType,
+    ProviderStatus,
+)
 from osintizada.core.evidence import EvidenceEngine
 from osintizada.core.models import ProviderResponse, ProviderResult
 

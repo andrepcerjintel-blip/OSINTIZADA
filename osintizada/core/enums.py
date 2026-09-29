@@ -1,4 +1,4 @@
-"""Enumerações centrais do OSINTIZADA.
+"""Enumerações centrais do RINO.
 
 Todos os vocabulários controlados (tipos de identificador, entidades, relações,
 status de provider, classificação de dados) ficam aqui para evitar strings

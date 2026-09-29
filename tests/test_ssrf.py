@@ -7,7 +7,12 @@ feita (URL com IP), o header Host e o SNI — provando que a conexão usa o IP v
 import httpx
 import pytest
 
-from osintizada.net import SafeHTTPClient, UnsafeURLError, ip_block_reason, resolve_and_validate
+from osintizada.net import (
+    SafeHTTPClient,
+    UnsafeURLError,
+    ip_block_reason,
+    resolve_and_validate,
+)
 
 PUBLIC = "93.184.216.34"
 PUBLIC_2 = "203.0.113.10"  # TEST-NET-3: não global → usado só onde queremos bloqueio

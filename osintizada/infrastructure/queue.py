@@ -4,7 +4,7 @@ Por que RQ (e não Celery/Dramatiq):
   * o projeto já usa Redis e só precisa de "entregar um job_id a um worker": RQ faz isso com
     uma dependência pequena, sem broker extra nem configuração de exchanges/rotas;
   * serialização JSON (``JSONSerializer``) — nada de pickle na fila;
-  * workers separados (``osintizada worker``) e monitoramento pronto (``rq info``, registries);
+  * workers separados (``rino worker``) e monitoramento pronto (``rq info``, registries);
   * testável em processo (``SimpleWorker`` + ``fakeredis``).
 Limitações cobertas pelo desenho: o RQ não reentrega sozinho um job cujo worker morreu —
 quem garante isso é o banco (heartbeat) + ``JobRecoveryService``. O retry de JOB também é
@@ -49,7 +49,7 @@ class RQJobQueue(JobQueue):
 
     def enqueue(self, job_id: str) -> None:
         self.queue.enqueue(TASK_PATH, job_id, job_id=self.message_id(job_id), result_ttl=86400,
-                           failure_ttl=7 * 86400, description=f"OSINTIZADA job {job_id}")
+                           failure_ttl=7 * 86400, description=f"RINO job {job_id}")
 
     def exists(self, job_id: str) -> bool:
         from rq.job import Job, JobStatus

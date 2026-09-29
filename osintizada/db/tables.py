@@ -1,4 +1,4 @@
-"""Schema relacional do OSINTIZADA (SQLAlchemy 2.0).
+"""Schema relacional do RINO (SQLAlchemy 2.0).
 
 Portável entre SQLite (desenvolvimento/testes) e PostgreSQL (produção):
 somente tipos genéricos (String, Text, JSON, DateTime com timezone).

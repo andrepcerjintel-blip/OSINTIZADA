@@ -4,9 +4,20 @@ import pytest
 from PIL import Image
 
 from osintizada.config import Settings
-from osintizada.core.enums import CorrelationLevel, EntityType, IdentifierType, RelationType
+from osintizada.core.enums import (
+    CorrelationLevel,
+    EntityType,
+    IdentifierType,
+    RelationType,
+)
 from osintizada.core.normalization import normalize
-from osintizada.images.hashing import ImageError, ImageMatchLevel, analyze_image, compare, hamming
+from osintizada.images.hashing import (
+    ImageError,
+    ImageMatchLevel,
+    analyze_image,
+    compare,
+    hamming,
+)
 from osintizada.images.store import ArtifactStore
 from osintizada.investigation.correlation import CorrelationEngine, RelationView
 from osintizada.investigation.pivot import EntitySnapshot
@@ -201,7 +212,11 @@ async def test_telegram_avatar_provenance(tmp_path):
 
 async def test_avatar_correlation_persisted_end_to_end(tmp_path, monkeypatch):
     """Dois IDs Telegram distintos com o MESMO avatar: correlação WEAK registrada, sem SAME_AS."""
-    from osintizada.repositories import CorrelationRepository, EntityRepository, RelationshipRepository
+    from osintizada.repositories import (
+        CorrelationRepository,
+        EntityRepository,
+        RelationshipRepository,
+    )
     from tests.fixtures.environment import build_service
 
     for var in ("BRAVE_SEARCH_API_KEY",):

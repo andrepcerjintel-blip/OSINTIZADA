@@ -41,17 +41,33 @@ from osintizada.core.enums import (
 )
 from osintizada.core.evidence import content_hash, evidence_fingerprint_for
 from osintizada.core.identifiers import IdentifierEngine
-from osintizada.core.models import NormalizedIdentifier, ProviderResponse, ProviderResult
+from osintizada.core.models import (
+    NormalizedIdentifier,
+    ProviderResponse,
+    ProviderResult,
+)
 from osintizada.core.normalization import normalize
 from osintizada.core.secrets import sanitize
 from osintizada.core.urls import canonical_url
 from osintizada.db import Database
 from osintizada.db.tables import EntityRow, utcnow
-from osintizada.investigation.control import ExecutionControl, InvestigationCancelled, NullControl
-from osintizada.investigation.correlation import CorrelationEngine, RelationView, detect_conflicts
+from osintizada.investigation.control import (
+    ExecutionControl,
+    InvestigationCancelled,
+    NullControl,
+)
+from osintizada.investigation.correlation import (
+    CorrelationEngine,
+    RelationView,
+    detect_conflicts,
+)
 from osintizada.investigation.pivot import EntitySnapshot, PivotDecision, PivotEngine
 from osintizada.observability import case_context
-from osintizada.orchestration.source_orchestrator import RunHooks, SearchRun, SourceOrchestrator
+from osintizada.orchestration.source_orchestrator import (
+    RunHooks,
+    SearchRun,
+    SourceOrchestrator,
+)
 from osintizada.repositories import (
     AuditRepository,
     CaseRepository,

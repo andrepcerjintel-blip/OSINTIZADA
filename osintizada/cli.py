@@ -1,4 +1,6 @@
-"""CLI do OSINTIZADA (Fase 1).
+"""CLI do RINO — Plataforma de Investigação OSINT.
+
+Uso: ``rino <comando>`` (o comando legado ``osintizada`` continua disponível como alias).
 
 Comandos:
   detect <input>             hipóteses de tipo + normalização
@@ -21,11 +23,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from typing import Any
 
 from osintizada import __version__
+from osintizada.branding import FULL_TITLE, PRODUCT_NAME
+from osintizada.branding import env as branding_env
 from osintizada.config import get_settings
 from osintizada.core.enums import IdentifierType, SearchMode
 from osintizada.core.identifiers import IdentifierEngine
@@ -238,7 +241,12 @@ def cmd_investigate(args: argparse.Namespace) -> int:
 
 
 def _print_case(service, case_id: str) -> None:
-    from osintizada.repositories import EntityRepository, EvidenceRepository, RelationshipRepository, SearchRepository
+    from osintizada.repositories import (
+        EntityRepository,
+        EvidenceRepository,
+        RelationshipRepository,
+        SearchRepository,
+    )
 
     with service.db.session() as s:
         entities = {e.id: e for e in EntityRepository(s).list(case_id)}
@@ -290,8 +298,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from osintizada.observability import configure_logging
 
     configure_logging(args.log_level or "INFO")
-    if args.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("OSINTIZADA_API_TOKEN"):
-        print("erro: para expor fora de localhost defina OSINTIZADA_API_TOKEN", file=sys.stderr)
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not branding_env("API_TOKEN"):
+        print("erro: para expor a API do RINO fora de localhost defina RINO_API_TOKEN", file=sys.stderr)
         return 2
     uvicorn.run("osintizada.api.app:create_app", factory=True, host=args.host, port=args.port, log_level="info")
     return 0
@@ -309,7 +317,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
         redis = create_redis()
         validate_redis(redis)
         db = Database()
-        validate_database(db, auto_migrate=os.environ.get("OSINTIZADA_AUTO_MIGRATE", "1") != "0")
+        validate_database(db, auto_migrate=branding_env("AUTO_MIGRATE", "1") != "0")
     except (RedisNotConfigured, StartupError) as exc:
         # Sem Redis não existe fila persistente: o worker se recusa a fingir que funciona.
         print(f"erro: {exc}", file=sys.stderr)
@@ -363,8 +371,10 @@ def cmd_db(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="osintizada", description="OSINT Investigation Orchestrator")
-    parser.add_argument("--version", action="version", version=f"osintizada {__version__}")
+    parser = argparse.ArgumentParser(
+        prog="rino", description=FULL_TITLE,
+        epilog="Variáveis de ambiente usam o prefixo RINO_ (o prefixo legado OSINTIZADA_ também é aceito).")
+    parser.add_argument("--version", action="version", version=f"{PRODUCT_NAME} {__version__}")
     parser.add_argument("--log-level", default=None, help="Logs estruturados (JSON) em stderr: DEBUG, INFO, WARNING")
     sub = parser.add_subparsers(dest="command", required=True)
     modes = [m.value for m in SearchMode if m != SearchMode.RAW]
@@ -460,7 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    load_dotenv(os.environ.get("OSINTIZADA_ENV_FILE", ".env"))
+    load_dotenv(branding_env("ENV_FILE", ".env"))
     if args.log_level:
         from osintizada.observability import configure_logging
 

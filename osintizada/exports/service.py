@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from osintizada import __version__
+from osintizada.branding import COLORS, PRODUCT_NAME, TAGLINE, logo_data_uri
 from osintizada.config import Settings, get_settings
 from osintizada.core.enums import AuditEvent
 from osintizada.db import Database
@@ -67,7 +68,9 @@ class ExportService:
             for x in searches:
                 provider_status.setdefault(x["provider"], Counter())[x["status"]] += 1
             data = {
-                "format": "osintizada.case", "format_version": 1, "generator": f"OSINTIZADA {__version__}",
+                # "osintizada.case" = identificador legado da MESMA estrutura (exports anteriores ao RINO).
+                "format": "rino.case", "format_version": 1, "format_aliases": ["osintizada.case"],
+                "product": PRODUCT_NAME, "generator": f"{PRODUCT_NAME} {__version__}",
                 "generated_at": utcnow().isoformat(),
                 "case": row_to_dict(case),
                 "seeds": [row_to_dict(i) for i in CaseRepository(s).inputs(case_id)],
@@ -130,11 +133,24 @@ class ExportService:
             return ", ".join(f'<a href="#ev-{e(i)}">{e(i[:8])}</a>' for i in ids) or "—"
 
         case = bundle["case"]
+        c = COLORS
         parts = [f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Relatório — {e(case['name'])}</title>
-<style>body{{font-family:system-ui,sans-serif;margin:2rem;max-width:1200px;color:#1f2328}}
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{PRODUCT_NAME} — Relatório — {e(case['name'])}</title>
+<style>body{{font-family:system-ui,sans-serif;margin:0;color:#1f2328;background:#fff}}
+main{{margin:0 auto;padding:1.5rem 2rem;max-width:1200px}}
+header.brand{{background:{c['ink']};color:{c['paper']};border-bottom:3px solid {c['accent']};
+padding:1rem 2rem;display:flex;align-items:center;gap:1rem}}
+header.brand img{{width:64px;height:64px;border-radius:10px;background:#fff}}
+header.brand .name{{font-size:1.6rem;font-weight:800;letter-spacing:.15em}}
+header.brand .brand-tag{{color:#aeb7c2;font-size:.9rem}}
+h1{{margin-top:.5rem}}h2{{border-bottom:2px solid {c['accent']};padding-bottom:.2rem}}
+a{{color:#0b6fd6}}
 table{{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.9rem}}th,td{{border:1px solid #d0d7de;padding:.35rem;text-align:left;vertical-align:top}}
-th{{background:#f6f8fa}}code{{font-size:.85em}}.tag{{padding:0 .3rem;border-radius:3px;background:#eef}}</style></head><body>
+th{{background:{c['graphite']};color:{c['paper']}}}code{{font-size:.85em}}.tag{{padding:0 .3rem;border-radius:3px;background:#eef}}
+@media print{{header.brand{{-webkit-print-color-adjust:exact;print-color-adjust:exact}}}}</style></head><body>
+<header class="brand"><img src="{logo_data_uri()}" alt="Logo {PRODUCT_NAME}">
+<div><div class="name">{PRODUCT_NAME}</div><div class="brand-tag">{e(TAGLINE)}</div></div></header><main>
 <h1>Relatório investigativo — {e(case['name'])}</h1>
 <p>Gerado em {e(bundle['generated_at'])} por {e(bundle['generator'])}. Case <code>{e(case['id'])}</code>, status {e(case['status'])}.</p>"""]
         parts.append("<h2>Case Summary</h2><table>" + "".join(
@@ -179,7 +195,7 @@ th{{background:#f6f8fa}}code{{font-size:.85em}}.tag{{padding:0 .3rem;border-radi
         parts.append("<h2>Search History</h2><table><tr><th>Início</th><th>Provider</th><th>Consulta</th><th>Status</th><th>Resultados</th><th>Erro</th></tr>" + "".join(
             f"<tr><td>{e(str(x['started_at']))}</td><td>{e(x['provider'])}</td><td>{e(x['query'])}</td><td>{e(x['status'])}</td>"
             f"<td>{x['result_count']}</td><td>{e(x['error_code'] or '')}</td></tr>" for x in bundle["searches"]) + "</table>")
-        parts.append("<h2>Limitations</h2><ul>" + "".join(f"<li>{e(t)}</li>" for t in bundle["limitations"]) + "</ul></body></html>")
+        parts.append("<h2>Limitations</h2><ul>" + "".join(f"<li>{e(t)}</li>" for t in bundle["limitations"]) + "</ul></main></body></html>")
         return "\n".join(parts)
 
     # --- arquivo (usado pelo Job de export) ------------------------------------------------------------
@@ -200,7 +216,7 @@ th{{background:#f6f8fa}}code{{font-size:.85em}}.tag{{padding:0 .3rem;border-radi
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{job_id}.{ext}"
         path.write_bytes(content)
-        info = {"format": fmt, "path": str(path), "filename": f"osintizada-{case_id[:8]}.{ext}", "mime": mime,
+        info = {"format": fmt, "path": str(path), "filename": f"rino-{case_id[:8]}.{ext}", "mime": mime,
                 "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
         with self.db.session() as s:
             AuditRepository(s).log(case_id, AuditEvent.EXPORT_CREATED, "ExportService",

@@ -1,4 +1,6 @@
-# Arquitetura do OSINTIZADA
+<p align="center"><img src="../assets/logo-rino.png" alt="RINO" width="160"></p>
+
+# Arquitetura do RINO
 
 ## 1. Histórico
 
@@ -7,6 +9,7 @@
 | 0.1.0 | 1 — Core | identificadores, normalização, modelos, planner, evidência, contrato de providers |
 | 0.2.0 | 2a–2c | resiliência (rate limit, retry, breaker, cache), SSRF, extractors, search engines |
 | 0.3.0 | 3 — Ciclo investigativo real | PSL, persistência, Case, providers de infraestrutura, Pivot/Correlation, API |
+| 0.5.0 | Identidade | projeto renomeado de OSINTIZADA para **RINO**; logo oficial integrada (ver §11) |
 | 0.4.0 | 4 — Resiliência, jobs, segurança | jobs persistentes + worker + recuperação, Redis, SSRF com pinning, avatar, timeline, exports |
 
 O repositório estava vazio antes da v0.1.0. Não havia código legado.
@@ -191,8 +194,10 @@ osintizada/
   images/                        hashing (SHA256/pHash/dHash), store (ArtifactStore), fetch, results
   timeline/ · exports/           TimelineService, ExportService (JSON/CSV/HTML)
   bootstrap.py                   validação de subida (banco, migrações, Redis)
+  branding.py                    identidade RINO: nome, tagline, paleta, logo, variáveis RINO_/OSINTIZADA_
+  assets/                        logo RINO redimensionada (256 px relatórios/tela inicial, 64 px ícone)
   resilience/ · net/ (SSRF com pinning) · extractors/ · observability/ (logs, métricas)
-  api/app.py                     FastAPI
+  api/app.py                     RINO API (FastAPI); api/pages.py: tela inicial
 ```
 
 ## 5. Modelo de dados
@@ -272,7 +277,7 @@ osintizada/
 | 57 | Export | IMPLEMENTADO | JSON/CSV/HTML como job; GraphML pendente |
 | 58 | Histórico de buscas | IMPLEMENTADO | `search_executions` |
 | 62 | Observabilidade | IMPLEMENTADO | logs com case_id/job_id/provider, `/metrics`, `/health`, SSE |
-| 63 | Testes | IMPLEMENTADO | 409 testes, rede e Redis simulados; jobs também em PostgreSQL |
+| 63 | Testes | IMPLEMENTADO | 420 testes, rede e Redis simulados; jobs também em PostgreSQL |
 | 68–70 | RAW / multi-input / seeds | IMPLEMENTADO | — |
 | 76 | "Como chegamos aqui?" | IMPLEMENTADO | `GET /cases/{id}/entities/{entity_id}` |
 | 78 | Controle humano | IMPLEMENTADO | bloqueio de valores/providers, limites, cancelamento e retry via API |
@@ -315,3 +320,33 @@ osintizada/
 **UI de acompanhamento + providers sociais (GitHub/Telegram público).** A execução agora é durável e
 observável (SSE, `/health`, `/metrics`). O próximo ganho vem de ampliar as fontes com identidade forte e dar
 ao investigador uma tela para revisar correlações e marcar falsos positivos.
+
+## 11. Identidade RINO e nomes legados
+
+O projeto se chamava **OSINTIZADA** e passou a se chamar **RINO** (tagline: *Plataforma de Investigação
+OSINT*). A logo oficial fica em `assets/logo-rino.png` (resolução original, idêntica à arte fornecida).
+Versões apenas redimensionadas ficam em `osintizada/assets/`.
+
+| Onde a identidade aparece | Como |
+|---|---|
+| Tela inicial da API (`GET /`) | logo, nome, tagline, estado de API/banco/Redis/worker |
+| Swagger (`/docs`) e ReDoc (`/redoc`) | título **RINO API**, favicon; logo no ReDoc (`x-logo`) |
+| `/health` | `product: "RINO"`, `api.name: "RINO API"` (demais campos inalterados) |
+| Relatório HTML | cabeçalho grafite com logo embutida (relatório autocontido) e borda azul elétrico |
+| Export JSON | `product: "RINO"`, `generator: "RINO <versão>"`, `format: "rino.case"` |
+| CLI | comando `rino`, `rino --version` → `RINO <versão>` |
+| Docker | projeto compose `rino`, imagem `rino:latest`, usuário `rino` |
+| User-Agent das requisições | `RINO/<versão> (+investigation research tool)` |
+
+**Nomes internos mantidos (e por quê)**
+
+| Nome legado | Motivo |
+|---|---|
+| Pacote Python `osintizada` e nome de distribuição | renomear quebraria imports, o caminho da tarefa RQ (`osintizada.jobs.worker.execute_job`) de jobs já enfileirados e instalações existentes |
+| Comando `osintizada` | alias do `rino` para scripts existentes |
+| Prefixo Redis `osintizada:` e fila `osintizada` | chaves, locks e jobs em andamento de instalações existentes |
+| Métricas `osintizada_*` | dashboards e alertas Prometheus existentes |
+| `data/osintizada.db`, banco/usuário `osintizada` no Postgres, volumes `osintizada_*` | dados já persistidos |
+| Variáveis `OSINTIZADA_*` e `config/osintizada.yaml` | aceitos como legado; `RINO_*` e `config/rino.yaml` têm precedência |
+| `format_aliases: ["osintizada.case"]` no export JSON | exports anteriores têm a mesma estrutura |
+| Nomes de logger `osintizada.*` | filtros de log existentes |

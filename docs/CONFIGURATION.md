@@ -1,9 +1,10 @@
-# Configuração
+# Configuração do RINO
 
 ## Fontes e precedência
 
 1. Padrões em `osintizada/config.py`
-2. YAML: `$OSINTIZADA_CONFIG` ou `config/osintizada.yaml` (merge profundo — só informe o que muda)
+2. YAML: `$RINO_CONFIG` ou `config/rino.yaml` (merge profundo — só informe o que muda). Legado aceito:
+   `$OSINTIZADA_CONFIG` e `config/osintizada.yaml` (usado só se `config/rino.yaml` não existir)
 3. Overrides em código: `load_settings(overrides={...})`
 
 ## Seções
@@ -37,7 +38,7 @@ resilience:
   shared_rate_limit: true       # com Redis: rate limit e cooldown de 429 comuns a API + todos os workers
 
 network:
-  user_agent: "OSINTIZADA/0.4 (+investigation research tool)"
+  user_agent: "RINO/0.5 (+investigation research tool)"
   allowed_ports: [80, 443]      # portas aceitas em URLs não confiáveis
   blocked_networks: []          # redes extras bloqueadas (CIDR)
   proxy_policy: pin             # pin | deny
@@ -47,10 +48,10 @@ redis:                          # URL somente via REDIS_URL (pode conter senha)
 
 cache:
   backend: memory               # memory (por processo) | redis (compartilhado entre API e workers)
-  prefix: osintizada            # prefixo de TODAS as chaves Redis (cache, locks, heartbeats, métricas)
+  prefix: osintizada            # prefixo de TODAS as chaves Redis (nome legado mantido: chaves existentes)
 
 jobs:
-  queue_name: osintizada
+  queue_name: osintizada        # nome legado mantido: jobs já enfileirados
   heartbeat_interval_seconds: 15
   stale_after_seconds: 90       # heartbeat mais antigo → INTERRUPTED → RETRYING/FAILED
   max_attempts: 3               # tentativas do JOB (≠ retry de provider)
@@ -141,9 +142,9 @@ correlation:
 
 ## Banco de dados
 
-- `DATABASE_URL` (env) > `database.url` > `sqlite:///data/osintizada.db`.
-- PostgreSQL: `pip install "osintizada[postgres]"` e `DATABASE_URL=postgresql+psycopg://…`.
-- Migrações: `osintizada db upgrade` (Alembic). A API aplica as migrações na inicialização (`OSINTIZADA_AUTO_MIGRATE=0` desativa).
+- `DATABASE_URL` (env) > `database.url` > `sqlite:///data/osintizada.db` (arquivo com nome legado, preservado).
+- PostgreSQL: `pip install -e ".[postgres]"` e `DATABASE_URL=postgresql+psycopg://…`.
+- Migrações: `rino db upgrade` (Alembic). A API aplica as migrações na inicialização (`RINO_AUTO_MIGRATE=0` desativa).
 
 ## Variáveis de ambiente
 
@@ -151,17 +152,20 @@ correlation:
 |---|---|
 | `DATABASE_URL` | conexão do banco |
 | `REDIS_CACHE_URL` | opcional: Redis/DB só para o cache (ex.: `maxmemory-policy allkeys-lru`); ausente → `REDIS_URL` |
-| `REDIS_URL` | Redis (fila, locks, cache, heartbeats). `rediss://:senha@host:6380/0` para TLS. Sem ela: jobs ficam `PENDING` (`QUEUE_UNAVAILABLE`) e `osintizada worker` se recusa a iniciar |
-| `OSINTIZADA_AUTO_MIGRATE` | `1` (padrão) aplica migrações na subida; `0` exige banco já migrado (falha com mensagem clara) |
-| `OSINTIZADA_TEST_DATABASE_URL` | só testes: roda `tests/test_jobs.py` contra PostgreSQL real (schema recriado) |
+| `REDIS_URL` | Redis (fila, locks, cache, heartbeats). `rediss://:senha@host:6380/0` para TLS. Sem ela: jobs ficam `PENDING` (`QUEUE_UNAVAILABLE`) e `rino worker` se recusa a iniciar |
+| `RINO_AUTO_MIGRATE` | `1` (padrão) aplica migrações na subida; `0` exige banco já migrado (falha com mensagem clara) |
+| `RINO_TEST_DATABASE_URL` | só testes: roda `tests/test_jobs.py` contra PostgreSQL real (schema recriado) |
 | `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | só `docker-compose.yml` (obrigatórias; nunca versionadas) |
-| `OSINTIZADA_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
+| `RINO_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
 | `BRAVE_SEARCH_API_KEY`, `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | buscadores |
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` | Telegram |
-| `OSINTIZADA_DNS_SERVERS` | resolvers DNS (padrão: sistema) |
-| `OSINTIZADA_RDAP_BASE` | bootstrap RDAP (padrão: https://rdap.org) |
-| `OSINTIZADA_PSL_FILE` | Public Suffix List mais recente que a embutida |
-| `OSINTIZADA_CONFIG`, `OSINTIZADA_ENV_FILE` | caminhos alternativos de configuração |
+| `RINO_DNS_SERVERS` | resolvers DNS (padrão: sistema) |
+| `RINO_RDAP_BASE` | bootstrap RDAP (padrão: https://rdap.org) |
+| `RINO_PSL_FILE` | Public Suffix List mais recente que a embutida |
+| `RINO_CONFIG`, `RINO_ENV_FILE` | caminhos alternativos de configuração |
+
+Toda variável `RINO_<NOME>` também é aceita com o prefixo legado `OSINTIZADA_<NOME>`; se as duas existirem,
+vale a `RINO_`.
 
 ## Secrets
 

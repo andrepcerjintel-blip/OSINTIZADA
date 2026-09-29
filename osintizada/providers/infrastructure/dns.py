@@ -11,7 +11,6 @@ O provider só registra o que o DNS responde; não infere propriedade.
 from __future__ import annotations
 
 import ipaddress
-import os
 from typing import Any, Protocol
 
 import dns.asyncresolver
@@ -19,12 +18,18 @@ import dns.exception
 import dns.resolver
 import dns.reversename
 
+from osintizada.branding import env as branding_env
 from osintizada.core.domains import host_entity_type
 from osintizada.core.enums import EntityType, IdentifierType, RelationType, SourceTier
 from osintizada.core.models import EntityRef, NormalizedIdentifier, ProviderResult
 from osintizada.core.normalization import normalize_host
 from osintizada.core.validators import is_valid_dns_name, is_valid_hostname
-from osintizada.providers.base import APIProvider, ProviderTimeout, ProviderUnavailable, register_provider
+from osintizada.providers.base import (
+    APIProvider,
+    ProviderTimeout,
+    ProviderUnavailable,
+    register_provider,
+)
 
 DOMAIN_RECORD_TYPES = ("A", "AAAA", "CNAME", "MX", "NS", "TXT")
 
@@ -39,11 +44,11 @@ class DNSLookup(Protocol):
 
 
 class DnsPythonLookup:
-    """Implementação real sobre dnspython (resolver do sistema ou OSINTIZADA_DNS_SERVERS)."""
+    """Implementação real sobre dnspython (resolver do sistema ou RINO_DNS_SERVERS)."""
 
     def __init__(self, timeout: float = 5.0, nameservers: list[str] | None = None) -> None:
         self.resolver = dns.asyncresolver.Resolver()
-        servers = nameservers or [s.strip() for s in os.environ.get("OSINTIZADA_DNS_SERVERS", "").split(",") if s.strip()]
+        servers = nameservers or [s.strip() for s in branding_env("DNS_SERVERS", "").split(",") if s.strip()]
         if servers:
             self.resolver.nameservers = servers
         self.timeout = timeout

@@ -12,7 +12,13 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from osintizada.core.domains import host_entity_type
-from osintizada.core.enums import EntityType, IdentifierType, RelationType, SourceTier, SourceType
+from osintizada.core.enums import (
+    EntityType,
+    IdentifierType,
+    RelationType,
+    SourceTier,
+    SourceType,
+)
 from osintizada.core.models import NormalizedIdentifier, ProviderResult
 from osintizada.core.urls import canonical_url
 from osintizada.core.validators import is_valid_hostname

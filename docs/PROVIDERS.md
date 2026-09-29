@@ -1,4 +1,4 @@
-# Providers
+# Providers do RINO
 
 Toda fonte externa (ou processamento local) é um **provider** independente. O Core nunca contém lógica
 específica de site.
@@ -17,7 +17,7 @@ específica de site.
 ## Criando um provider
 
 ```python
-# osintizada/providers/<categoria>/<nome>.py
+# osintizada/providers/<categoria>/<nome>.py   (pacote interno com nome legado)
 from osintizada.core.enums import EntityType, IdentifierType, SourceTier
 from osintizada.core.models import NormalizedIdentifier, ProviderResult
 from osintizada.providers.base import APIProvider, RateLimitedError, register_provider

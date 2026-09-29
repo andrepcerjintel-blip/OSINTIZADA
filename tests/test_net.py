@@ -117,9 +117,9 @@ async def test_user_agent_sent():
         return httpx.Response(200, json={"a": 1})
 
     async with SafeHTTPClient(transport=httpx.MockTransport(handler), resolver=resolver_for({}),
-                              user_agent="OSINTIZADA/test") as client:
+                              user_agent="RINO/test") as client:
         result = await client.get("https://site.example/")
-    assert seen["ua"] == "OSINTIZADA/test" and result.json() == {"a": 1}
+    assert seen["ua"] == "RINO/test" and result.json() == {"a": 1}
 
 
 def test_parse_retry_after():

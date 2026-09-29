@@ -1,8 +1,13 @@
-# OSINTIZADA
+<p align="center">
+  <img src="assets/logo-rino.png" alt="RINO" width="280">
+</p>
 
-Plataforma privada, modular e extensível de investigação OSINT: um **OSINT Investigation Orchestrator**.
+# RINO — Plataforma de Investigação OSINT
 
-A partir de um ou mais identificadores, o OSINTIZADA abre um **Case**, registra os inputs como **seeds**,
+Plataforma privada, modular e extensível de investigação OSINT: orquestra fontes, pivôs, evidências e
+correlações de uma investigação de ponta a ponta.
+
+A partir de um ou mais identificadores, o RINO abre um **Case**, registra os inputs como **seeds**,
 consulta fontes reais, transforma cada resultado em **evidência**, consolida **entidades** sem duplicatas,
 gera **pivôs** até a profundidade configurada, **correlaciona** entidades com score explicável e persiste
 tudo com auditoria.
@@ -10,7 +15,19 @@ tudo com auditoria.
 > **Princípio:** toda conclusão deve ser rastreável até a evidência que a originou.
 > **Código produz evidência. IA interpreta evidência.**
 
-## Estado atual (v0.4.1)
+## Principais capacidades
+
+- **Investigação persistente por Case**: seeds, entidades sem duplicatas, evidências com proveniência,
+  relações, pivôs com profundidade e orçamento, correlação explicável e contradições registradas.
+- **Execução resiliente**: a API só enfileira; workers separados executam com heartbeat, lock por Case,
+  checkpoints, retomada após queda, cancelamento e dead letter.
+- **Fontes reais**: DNS, RDAP, Certificate Transparency, Wayback (sem chave); Brave/Google e Telegram com
+  credenciais (senão `NOT_CONFIGURED`).
+- **Segurança**: SSRF com IP pinning (anti DNS rebinding), secrets nunca expostos, token na API.
+- **Análise**: correlação visual de avatares (SHA256/pHash/dHash), timeline pelo momento do fato, exports
+  JSON/CSV/HTML.
+
+## Estado atual (v0.5.0)
 
 | Componente | Estado |
 |---|---|
@@ -39,13 +56,13 @@ não finge ter fila: o Job fica `PENDING` com o aviso `QUEUE_UNAVAILABLE`; sem w
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                 # + ".[telegram]" e/ou ".[postgres]" se for usar
 cp .env.example .env                    # opcional; .env nunca vai para o Git
-osintizada db upgrade                   # cria/atualiza o banco (SQLite em data/ por padrão)
+rino db upgrade                         # cria/atualiza o banco (SQLite em data/ por padrão)
 ```
 
 ### Docker (api + worker + redis + postgres)
 
 ```bash
-cp .env.example .env    # defina POSTGRES_PASSWORD, REDIS_PASSWORD e OSINTIZADA_API_TOKEN (o compose exige)
+cp .env.example .env    # defina POSTGRES_PASSWORD, REDIS_PASSWORD e RINO_API_TOKEN (o compose exige)
 docker compose up -d --build
 docker compose up -d --scale worker=3
 ```
@@ -54,13 +71,13 @@ docker compose up -d --scale worker=3
 
 ```bash
 # Case novo, ciclo completo: seed → providers → evidência → entidades → pivôs → correlação
-osintizada investigate example.com --mode deep
-osintizada investigate contato@empresa.com.br @usuario --mode quick --block gmail.com
-osintizada investigate 8.8.8.8 --max-depth 1 --json
+rino investigate example.com --mode deep
+rino investigate contato@empresa.com.br @usuario --mode quick --block gmail.com
+rino investigate 8.8.8.8 --max-depth 1 --json
 
-osintizada cases                        # lista Cases
-osintizada case <case_id>               # entidades, relações e buscas de um Case
-osintizada providers --health           # status das integrações (pode consumir quota)
+rino cases                              # lista Cases
+rino case <case_id>                     # entidades, relações e buscas de um Case
+rino providers --health                 # status das integrações (pode consumir quota)
 ```
 
 Ferramentas auxiliares (sem persistência): `detect`, `plan`, `raw`, `run`, `search`, `extract`.
@@ -69,9 +86,9 @@ Ferramentas auxiliares (sem persistência): `detect`, `plan`, `raw`, `run`, `sea
 
 ```bash
 export REDIS_URL=redis://127.0.0.1:6379/0
-osintizada serve                        # http://127.0.0.1:8000/docs (só cria e enfileira jobs)
-osintizada worker                       # executa os jobs; rode quantos quiser
-# fora de localhost é obrigatório: OSINTIZADA_API_TOKEN=... osintizada serve --host 0.0.0.0
+rino serve                              # http://127.0.0.1:8000 (tela inicial) e /docs (só cria e enfileira jobs)
+rino worker                             # executa os jobs; rode quantos quiser
+# fora de localhost é obrigatório: RINO_API_TOKEN=... rino serve --host 0.0.0.0
 ```
 
 ```bash
@@ -84,6 +101,8 @@ curl -N localhost:8000/jobs/<job_id>/events   # progresso ao vivo (SSE)
 
 | Rota | Conteúdo |
 |---|---|
+| `GET /` | tela inicial RINO (logo, estado de API/banco/Redis/worker, links da documentação) |
+| `GET /docs`, `GET /redoc`, `GET /openapi.json` | documentação da **RINO API** |
 | `GET /health`, `GET /metrics` | api, database, redis, worker (`ONLINE`/`STALE`/`OFFLINE`), fila; métricas Prometheus |
 | `POST /cases`, `GET /cases`, `GET /cases/{id}` | Cases (com seeds, execuções e contagens) |
 | `POST /cases/{id}/investigate` | cria e enfileira um Job de investigação |
@@ -98,14 +117,42 @@ curl -N localhost:8000/jobs/<job_id>/events   # progresso ao vivo (SSE)
 | `GET /cases/{id}/pivots`, `/correlations`, `/conflicts` | decisões de pivô, scores explicáveis, contradições |
 | `GET /providers`, `/providers/health`, `POST /providers/{name}/validate-credentials` | integrações (variáveis faltantes, nunca valores) |
 
-CLI: `osintizada worker [--burst]`, `osintizada worker-status [--local] [--require-online]`, `osintizada reconcile`.
+CLI: `rino worker [--burst]`, `rino worker-status [--local] [--require-online]`, `rino reconcile`.
+
+## Variáveis de ambiente (principais)
+
+| Variável | Uso |
+|---|---|
+| `DATABASE_URL` | banco (padrão: SQLite em `data/`; produção: PostgreSQL) |
+| `REDIS_URL` (+ `REDIS_CACHE_URL` opcional) | fila, locks, cache compartilhado, heartbeats |
+| `RINO_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
+| `RINO_CONFIG` | arquivo de configuração (padrão `config/rino.yaml`) |
+| `BRAVE_SEARCH_API_KEY`, `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` | buscadores |
+| `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` | Telegram |
+
+Lista completa em [docs/CONFIGURATION.md](docs/CONFIGURATION.md). O prefixo legado `OSINTIZADA_` continua
+aceito (o `RINO_` tem precedência).
+
+## Arquitetura resumida
+
+```
+Cliente ─► RINO API (FastAPI) ─► JobService ─► Banco (fonte da verdade) + fila Redis
+                                                      │
+                                   Worker(s) ◄────────┘  heartbeat · lock por Case · checkpoints
+                                      │
+                         Investigation Engine ─► SourceOrchestrator ─► Providers (DNS, RDAP, CT, …)
+                                      │
+                      Evidência ─► Entidades ─► Pivôs ─► Correlação ─► Timeline / Exports
+```
+
+Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Testes
 
 ```bash
-pytest          # 409 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
+pytest          # 420 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
 # mesmos testes de jobs contra PostgreSQL real (banco descartável — o schema é recriado):
-OSINTIZADA_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/test_jobs.py
+RINO_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/test_jobs.py
 ```
 
 ## Documentação
@@ -113,11 +160,23 @@ OSINTIZADA_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest t
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): fluxo, jobs e recuperação, Redis, SSRF, modelo de dados, roadmap
 - [docs/PROVIDERS.md](docs/PROVIDERS.md): contrato, providers existentes e como criar um novo
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): modos, orçamentos, pivôs, correlação, banco e secrets
+- [BACKLOG.md](BACKLOG.md): itens futuros
 - [CHANGELOG.md](CHANGELOG.md)
+
+## Identidade do projeto
+
+O projeto se chama **RINO** (antes OSINTIZADA). A logo oficial fica em
+[`assets/logo-rino.png`](assets/logo-rino.png); versões redimensionadas para a API e os relatórios ficam em
+`osintizada/assets/`. A identidade visual usa grafite/preto com azul elétrico como destaque. A logo aparece
+na tela inicial da API, na documentação Swagger/ReDoc e no cabeçalho do relatório HTML.
+
+Por compatibilidade, alguns nomes internos continuam com o nome legado: o pacote Python `osintizada`, o
+comando alias `osintizada`, o prefixo das chaves Redis e das métricas (`osintizada_*`), o nome da fila e o
+banco padrão `data/osintizada.db`. Ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#11-identidade-rino-e-nomes-legados).
 
 ## Uso responsável
 
-O OSINTIZADA coleta apenas informação legitimamente acessível: fontes públicas, APIs autorizadas e
+O RINO coleta apenas informação legitimamente acessível: fontes públicas, APIs autorizadas e
 serviços contratados. Não implementa bypass de autenticação, exploração, quebra de senha ou evasão de
 controles de acesso. Correlações são hipóteses com evidência. `SAME_AS` exige sinal forte, e homônimos
 nunca são ligados só pelo nome.

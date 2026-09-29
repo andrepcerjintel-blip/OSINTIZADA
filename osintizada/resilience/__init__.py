@@ -1,6 +1,11 @@
 """Resiliência de providers: rate limit, retry/backoff, circuit breaker e cache."""
 
-from osintizada.resilience.cache import CacheBackend, InMemoryTTLCache, MemoryCacheBackend, cache_key
+from osintizada.resilience.cache import (
+    CacheBackend,
+    InMemoryTTLCache,
+    MemoryCacheBackend,
+    cache_key,
+)
 from osintizada.resilience.circuit_breaker import BreakerState, CircuitBreaker
 from osintizada.resilience.rate_limiter import RateLimiter, TokenBucket
 from osintizada.resilience.retry import TransientError, backoff_delay, retry_async

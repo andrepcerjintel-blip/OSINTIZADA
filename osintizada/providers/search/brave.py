@@ -60,7 +60,7 @@ class BraveSearchProvider(SearchEngineProvider):
     async def _healthcheck(self) -> str:
         async with self.http_client() as client:
             result = await self.fetch(
-                client, "GET", BRAVE_ENDPOINT, params={"q": "osintizada", "count": 1},
+                client, "GET", BRAVE_ENDPOINT, params={"q": "rino", "count": 1},
                 headers={"Accept": "application/json",
                          "X-Subscription-Token": self.secret("BRAVE_SEARCH_API_KEY") or ""},
                 auth_statuses=(401, 403),

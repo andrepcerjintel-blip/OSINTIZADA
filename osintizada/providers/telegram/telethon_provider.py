@@ -24,7 +24,12 @@ from osintizada.core.enums import (
     SourceAccess,
     SourceTier,
 )
-from osintizada.core.models import EntityRef, NormalizedIdentifier, ProviderResult, utcnow
+from osintizada.core.models import (
+    EntityRef,
+    NormalizedIdentifier,
+    ProviderResult,
+    utcnow,
+)
 from osintizada.core.secrets import get_secret
 from osintizada.images.hashing import ImageError, analyze_image
 from osintizada.images.results import image_result

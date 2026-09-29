@@ -87,7 +87,11 @@ def build_cache(settings, client: redis.Redis | None = None) -> CacheBackend:
     from osintizada.resilience.cache import MemoryCacheBackend
 
     if settings.cache.backend == "redis":
-        from osintizada.infrastructure.redis_client import create_redis, redis_cache_url, redis_url
+        from osintizada.infrastructure.redis_client import (
+            create_redis,
+            redis_cache_url,
+            redis_url,
+        )
 
         cache_url = redis_cache_url(settings)
         if client is None or (cache_url and cache_url != redis_url(settings)):

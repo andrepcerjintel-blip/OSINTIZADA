@@ -1,1 +1,1 @@
-"""Core do OSINTIZADA: identificadores, normalização, modelos, evidências e planejamento."""
+"""Core do RINO: identificadores, normalização, modelos, evidências e planejamento."""

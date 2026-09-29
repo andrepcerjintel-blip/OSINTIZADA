@@ -57,7 +57,7 @@ class IdentifierAnalysisProvider(LocalProvider):
         return ProviderResult(
             type=etype,
             value=value,
-            source_name="OSINTIZADA (derivação local)",
+            source_name="RINO (derivação local)",
             confidence=confidence,
             classification=DataClassification.DERIVED,
             raw={"derived_from": source, "rule": rule, **extra},

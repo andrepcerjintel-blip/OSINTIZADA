@@ -7,7 +7,11 @@ from osintizada.config import ProviderSettings, Settings, load_settings
 from osintizada.core.enums import EntityType, IdentifierType, ProviderStatus
 from osintizada.core.models import ProviderItem, ProviderResult
 from osintizada.core.normalization import normalize
-from osintizada.providers.base import APIProvider, ProviderNotConfigured, ProviderTimeout
+from osintizada.providers.base import (
+    APIProvider,
+    ProviderNotConfigured,
+    ProviderTimeout,
+)
 from osintizada.resilience import ProviderRuntime
 
 IDENT = normalize("example.com", IdentifierType.DOMAIN)

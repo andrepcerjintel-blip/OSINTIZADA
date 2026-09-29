@@ -1,8 +1,9 @@
-"""Configuração central do OSINTIZADA.
+"""Configuração central do RINO.
 
 Ordem de precedência:
   1. valores padrão definidos aqui;
-  2. arquivo YAML (``OSINTIZADA_CONFIG`` ou ``config/osintizada.yaml``);
+  2. arquivo YAML (``RINO_CONFIG`` ou ``config/rino.yaml``; legado: ``OSINTIZADA_CONFIG`` e
+     ``config/osintizada.yaml`` continuam aceitos);
   3. overrides explícitos passados em código.
 
 Secrets NUNCA ficam neste arquivo nem no YAML: são lidos de variáveis de
@@ -11,7 +12,6 @@ ambiente via ``osintizada.core.secrets``.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -19,9 +19,11 @@ from typing import Any
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from osintizada.branding import env as branding_env
 from osintizada.core.enums import QueryCategory, SearchMode
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "osintizada.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "rino.yaml"
+LEGACY_CONFIG_PATH = DEFAULT_CONFIG_PATH.with_name("osintizada.yaml")  # instalações anteriores ao RINO
 
 
 class SearchSettings(BaseModel):
@@ -98,7 +100,7 @@ class DatabaseSettings(BaseModel):
 
 
 class NetworkSettings(BaseModel):
-    user_agent: str = "OSINTIZADA/0.4 (+investigation research tool)"
+    user_agent: str = "RINO/0.5 (+investigation research tool)"
     # Portas permitidas para URLs não confiáveis (providers podem declarar outras).
     allowed_ports: list[int] = Field(default_factory=lambda: [80, 443])
     # Redes adicionais proibidas (além de todo endereço não-global da stdlib).
@@ -270,7 +272,9 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def load_settings(path: str | Path | None = None, overrides: dict[str, Any] | None = None) -> Settings:
-    config_path = Path(path or os.environ.get("OSINTIZADA_CONFIG", DEFAULT_CONFIG_PATH))
+    config_path = Path(path or branding_env("CONFIG", DEFAULT_CONFIG_PATH))
+    if path is None and not config_path.is_file() and LEGACY_CONFIG_PATH.is_file():
+        config_path = LEGACY_CONFIG_PATH
     data: dict[str, Any] = Settings().model_dump(mode="json")
     if config_path.is_file():
         with config_path.open(encoding="utf-8") as fh:

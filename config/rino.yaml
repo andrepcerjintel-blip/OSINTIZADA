@@ -1,4 +1,4 @@
-# Configuração central do OSINTIZADA.
+# Configuração central do RINO — Plataforma de Investigação OSINT.
 # NUNCA coloque API keys aqui: secrets vêm de variáveis de ambiente (.env fora do Git).
 # Valores omitidos usam os padrões de osintizada/config.py.
 
@@ -47,7 +47,7 @@ resilience:
   shared_rate_limit: true         # com Redis: cota do provider compartilhada entre todos os processos
 
 network:
-  user_agent: "OSINTIZADA/0.4 (+investigation research tool)"
+  user_agent: "RINO/0.5 (+investigation research tool)"
   allowed_ports: [80, 443]      # portas para URLs não confiáveis (SSRF)
   blocked_networks: []          # redes extras bloqueadas (além de todo IP não-global)
   proxy_policy: pin             # pin | deny (com proxy socks5h que resolve DNS)

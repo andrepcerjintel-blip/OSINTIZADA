@@ -3,7 +3,14 @@ import asyncio
 import pytest
 
 from osintizada.config import ProviderSettings
-from osintizada.core.enums import EntityOrigin, EntityType, IdentifierType, ProviderStatus, SearchMode, SourceTier
+from osintizada.core.enums import (
+    EntityOrigin,
+    EntityType,
+    IdentifierType,
+    ProviderStatus,
+    SearchMode,
+    SourceTier,
+)
 from osintizada.core.models import ProviderResult
 from osintizada.core.normalization import normalize
 from osintizada.orchestration.source_orchestrator import SourceOrchestrator
@@ -43,7 +50,7 @@ class FakeWeb(HTTPProvider):
 class NeedsKey(HTTPProvider):
     name = "test.needs_key"
     supported_identifiers = frozenset({IdentifierType.USERNAME})
-    required_secrets = ("OSINTIZADA_TEST_KEY_THAT_DOES_NOT_EXIST",)
+    required_secrets = ("RINO_TEST_KEY_THAT_DOES_NOT_EXIST",)
 
     async def _search(self, identifier, query):  # pragma: no cover - não deve rodar
         raise AssertionError("não deveria executar sem credencial")
@@ -107,7 +114,7 @@ async def test_missing_credentials_not_configured(settings):
     p = NeedsKey(settings)
     assert not p.is_configured()
     assert (await p.search(USER)).status == ProviderStatus.NOT_CONFIGURED
-    assert p.masked_credentials() == {"OSINTIZADA_TEST_KEY_THAT_DOES_NOT_EXIST": "NOT CONFIGURED"}
+    assert p.masked_credentials() == {"RINO_TEST_KEY_THAT_DOES_NOT_EXIST": "NOT CONFIGURED"}
     assert (await p.healthcheck()).status == "not_configured"
 
 
@@ -199,7 +206,9 @@ async def test_local_provider_derivations(settings):
 
 
 def test_local_provider_is_local_and_free(settings):
-    from osintizada.providers.local.identifier_analysis import IdentifierAnalysisProvider
+    from osintizada.providers.local.identifier_analysis import (
+        IdentifierAnalysisProvider,
+    )
 
     p = IdentifierAnalysisProvider(settings)
     assert isinstance(p, LocalProvider)

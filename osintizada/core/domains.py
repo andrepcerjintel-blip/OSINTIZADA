@@ -3,7 +3,7 @@
 Fonte principal: a PSL oficial (https://publicsuffix.org), distribuída com o
 pacote ``publicsuffixlist`` e atualizável sem mudar código:
 
-  * ``OSINTIZADA_PSL_FILE`` (ou ``domains.psl_file`` na configuração) aponta
+  * ``RINO_PSL_FILE`` (legado: ``OSINTIZADA_PSL_FILE``; ou ``domains.psl_file`` na configuração) aponta
     para uma cópia local mais recente de ``public_suffix_list.dat``.
 
 Inclui as seções ICANN e PRIVATE da PSL (ex.: ``github.io``), o que é o
@@ -14,11 +14,12 @@ usuário, não ao GitHub.
 from __future__ import annotations
 
 import ipaddress
-import os
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
 from publicsuffixlist import PublicSuffixList
+
+from osintizada.branding import env as branding_env
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ class DomainParser:
 
 @lru_cache(maxsize=1)
 def get_domain_parser() -> DomainParser:
-    return DomainParser(os.environ.get("OSINTIZADA_PSL_FILE") or None)
+    return DomainParser(branding_env("PSL_FILE") or None)
 
 
 def parse_domain(hostname: str) -> dict:

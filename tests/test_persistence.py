@@ -3,7 +3,14 @@ from datetime import datetime, timezone
 import pytest
 
 from osintizada.core.canonical import canonicalize, entity_fingerprint_hash, handle_of
-from osintizada.core.enums import AuditEvent, CaseStatus, EntityOrigin, EntityType, ProviderStatus, RelationType
+from osintizada.core.enums import (
+    AuditEvent,
+    CaseStatus,
+    EntityOrigin,
+    EntityType,
+    ProviderStatus,
+    RelationType,
+)
 from osintizada.core.models import ProviderResponse
 from osintizada.db import Database
 from osintizada.repositories import (

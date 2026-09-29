@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "osintizada"
-version = "0.4.1"
-description = "OSINT Investigation Orchestrator — identificadores, pivôs, correlação e proveniência."
+name = "osintizada"   # nome de distribuição legado (evita duas instalações do mesmo pacote); produto: RINO
+version = "0.5.0"
+description = "RINO — Plataforma de Investigação OSINT: identificadores, pivôs, correlação e proveniência."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,12 +30,14 @@ postgres = ["psycopg[binary]>=3.1"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "fakeredis[lua]>=2.23"]
 
 [project.scripts]
-osintizada = "osintizada.cli:main"
+rino = "osintizada.cli:main"
+osintizada = "osintizada.cli:main"   # alias legado (compatibilidade)
 
 [tool.setuptools.packages.find]
 include = ["osintizada*"]
 
 [tool.setuptools.package-data]
+"osintizada" = ["assets/*.png"]
 "osintizada.db" = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 
 [tool.pytest.ini_options]

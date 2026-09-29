@@ -6,7 +6,12 @@ from pydantic import ValidationError
 from osintizada.config import load_settings
 from osintizada.core.enums import EntityType, RelationType, SearchMode
 from osintizada.core.models import Entity, Relationship
-from osintizada.core.secrets import SecretRedactingFilter, load_dotenv, mask_secret, sanitize
+from osintizada.core.secrets import (
+    SecretRedactingFilter,
+    load_dotenv,
+    mask_secret,
+    sanitize,
+)
 
 
 def test_entity_id_is_deterministic():

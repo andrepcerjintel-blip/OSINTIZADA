@@ -1,19 +1,23 @@
 """Ambiente de jobs: banco SQLite + Redis simulado (fakeredis) + RQ real + providers reais com rede simulada.
 
-OSINTIZADA_TEST_DATABASE_URL=postgresql+psycopg://… roda os mesmos testes contra PostgreSQL real
+RINO_TEST_DATABASE_URL=postgresql+psycopg://… roda os mesmos testes contra PostgreSQL real
 (o schema é recriado a cada teste — use um banco descartável).
 """
 
 from __future__ import annotations
 
-import os
-
 import fakeredis
 
+from osintizada.branding import env as branding_env
 from osintizada.config import Settings
 from osintizada.infrastructure.queue import RQJobQueue
 from osintizada.jobs.service import JobService
-from osintizada.jobs.worker import JobRunner, WorkerContext, build_worker_context, run_worker
+from osintizada.jobs.worker import (
+    JobRunner,
+    WorkerContext,
+    build_worker_context,
+    run_worker,
+)
 from tests.fixtures.environment import build_service
 
 
@@ -25,7 +29,7 @@ class JobsEnv:
         self.settings.jobs.case_lock_wait_seconds = 0.2
         self.server = fakeredis.FakeServer()
         self.redis = fakeredis.FakeRedis(server=self.server)
-        url = os.environ.get("OSINTIZADA_TEST_DATABASE_URL")
+        url = branding_env("TEST_DATABASE_URL")
         if url:
             from osintizada.db import Database
             from osintizada.db.tables import Base

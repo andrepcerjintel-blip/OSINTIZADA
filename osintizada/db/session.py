@@ -52,7 +52,7 @@ class Database:
         self._factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_all(self) -> None:
-        """Cria o schema diretamente (testes/dev). Produção: ``osintizada db upgrade`` (Alembic)."""
+        """Cria o schema diretamente (testes/dev). Produção: ``rino db upgrade`` (Alembic)."""
         Base.metadata.create_all(self.engine)
 
     def upgrade(self, revision: str = "head") -> None:

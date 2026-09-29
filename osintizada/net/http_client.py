@@ -19,9 +19,14 @@ from urllib.parse import urljoin
 
 import httpx
 
-from osintizada.net.ssrf import DEFAULT_ALLOWED_PORTS, Resolver, UnsafeURLError, resolve_and_validate
+from osintizada.net.ssrf import (
+    DEFAULT_ALLOWED_PORTS,
+    Resolver,
+    UnsafeURLError,
+    resolve_and_validate,
+)
 
-DEFAULT_USER_AGENT = "OSINTIZADA/0.4 (+investigation research tool)"
+DEFAULT_USER_AGENT = "RINO/0.5 (+investigation research tool)"
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 

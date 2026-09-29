@@ -88,7 +88,7 @@ class GoogleCSEProvider(SearchEngineProvider):
 
     async def _healthcheck(self) -> str:
         async with self.http_client() as client:
-            hits = await self.execute_query(client, "osintizada")  # consome 1 consulta da quota
+            hits = await self.execute_query(client, "rino")  # consome 1 consulta da quota
         return f"ok ({len(hits)} resultado(s))"
 
     def _raise_for_google_error(self, result: HTTPResult) -> None:

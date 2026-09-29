@@ -31,7 +31,12 @@ from osintizada.infrastructure.queue import JobQueue
 from osintizada.investigation.service import InvestigationRequest
 from osintizada.jobs.control import cancel_key, progress_key
 from osintizada.observability.metrics import metrics
-from osintizada.repositories import AuditRepository, CaseRepository, JobRepository, row_to_dict
+from osintizada.repositories import (
+    AuditRepository,
+    CaseRepository,
+    JobRepository,
+    row_to_dict,
+)
 
 log = logging.getLogger("osintizada.jobs")
 EXPORT_FORMATS = ("json", "csv", "html")

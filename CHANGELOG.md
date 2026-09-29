@@ -1,6 +1,34 @@
-# Changelog
+# Changelog do RINO
+
+O projeto se chamava OSINTIZADA até a versão 0.4.1. As entradas antigas mantêm o nome da época.
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
+
+## [0.5.0] — 2026-09-29 — Branding Migration: OSINTIZADA → RINO
+
+### Alterado
+- **Projeto renomeado de OSINTIZADA para RINO** (tagline: *Plataforma de Investigação OSINT*) em todos os
+  pontos visíveis: título e descrição da API (**RINO API**), Swagger/ReDoc, `/health` (`product`,
+  `api.name`), CLI (`rino`, `--version`, help), export JSON (`product`, `generator`, `format: "rino.case"`),
+  relatório HTML, nome do arquivo baixado (`rino-<case>.<ext>`), User-Agent (`RINO/0.5`), fila (descrição),
+  Docker (projeto `rino`, imagem `rino:latest`, usuário `rino`), README e documentação.
+- Configuração oficial em `config/rino.yaml`; variáveis de ambiente com prefixo `RINO_`.
+
+### Adicionado
+- **Logo oficial integrada**: `assets/logo-rino.png` (arte original, sem alteração) e versões redimensionadas
+  em `osintizada/assets/`. A logo aparece na tela inicial da API (`GET /`), no favicon do Swagger/ReDoc, no
+  ReDoc (`x-logo`) e no cabeçalho do relatório HTML (embutida, relatório autocontido). Rotas
+  `GET /branding/logo.png` e `GET /branding/icon.png`.
+- `osintizada/branding.py`: nome, tagline, paleta (grafite + azul elétrico) e leitura de variáveis
+  `RINO_*` com fallback para o legado.
+- Tela inicial da API com estado de API/banco/Redis/worker (via `/health`).
+- `tests/test_branding.py` (11 testes).
+
+### Compatibilidade mantida
+- Pacote Python e nome de distribuição `osintizada`, comando alias `osintizada`, variáveis `OSINTIZADA_*`,
+  `config/osintizada.yaml` (se `config/rino.yaml` não existir), prefixo Redis e nome da fila, métricas
+  `osintizada_*`, `data/osintizada.db`, banco/usuário/volumes do compose. `format_aliases` no export JSON.
+  Nenhuma rota, campo existente de resposta, tabela ou migração foi alterada.
 
 ## [0.4.1] — 2026-09-28 — Revisão da fase 4
 

@@ -1,11 +1,12 @@
-"""API FastAPI do OSINTIZADA.
+"""RINO API (FastAPI) — Plataforma de Investigação OSINT.
 
 A API NÃO executa investigação: ela valida, grava um Job no banco, publica na fila (Redis/RQ)
-e responde imediatamente. Workers separados (``osintizada worker``) executam os Jobs. Reiniciar
+e responde imediatamente. Workers separados (``rino worker``) executam os Jobs. Reiniciar
 a API não afeta investigações em andamento; os resultados permanecem no banco.
 
 Segurança:
-  * ``OSINTIZADA_API_TOKEN`` definido → exige ``Authorization: Bearer <token>`` (exceto ``/health``);
+  * ``RINO_API_TOKEN`` (legado: ``OSINTIZADA_API_TOKEN``) definido → exige ``Authorization: Bearer <token>``
+    (exceto ``/health``, ``/`` e ``/branding/*``, que não expõem dados);
   * respostas nunca incluem secrets (credenciais mascaradas; só NOMES das variáveis ausentes).
 """
 
@@ -15,17 +16,40 @@ import asyncio
 import hmac
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 
 from osintizada import __version__
+from osintizada.api.pages import home_html
 from osintizada.bootstrap import database_status
-from osintizada.core.enums import TERMINAL_JOB_STATUSES, AuditEvent, EntityType, JobStatus, JobType
+from osintizada.branding import (
+    LOGO_HEADER,
+    LOGO_ICON,
+    PRODUCT_NAME,
+    TAGLINE,
+    logo_bytes,
+)
+from osintizada.branding import env as branding_env
+from osintizada.core.enums import (
+    TERMINAL_JOB_STATUSES,
+    AuditEvent,
+    EntityType,
+    JobStatus,
+    JobType,
+)
 from osintizada.db import Database
 from osintizada.infrastructure.redis_client import redis_status
 from osintizada.investigation.service import InvestigationRequest, InvestigationService
@@ -80,7 +104,7 @@ def build_default_services() -> tuple[InvestigationService, JobService, Any]:
 
     settings = get_settings()
     db = Database()
-    validate_database(db, auto_migrate=os.environ.get("OSINTIZADA_AUTO_MIGRATE", "1") != "0")
+    validate_database(db, auto_migrate=branding_env("AUTO_MIGRATE", "1") != "0")
     try:
         redis = create_redis(settings=settings)
         redis.ping()
@@ -108,8 +132,10 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
     if redis is not None:  # contadores agregados entre API e workers
         metrics.bind_redis(redis, settings.cache.prefix)
 
-    app = FastAPI(title="OSINTIZADA", version=__version__,
-                  description="OSINT Investigation Orchestrator — toda conclusão rastreável até a evidência.")
+    app = FastAPI(title=f"{PRODUCT_NAME} API", version=__version__,
+                  description=f"API da plataforma {PRODUCT_NAME} para investigação OSINT ({TAGLINE}). "
+                              "Toda conclusão é rastreável até a evidência que a originou.",
+                  docs_url=None, redoc_url=None)  # /docs e /redoc servidos abaixo com a identidade RINO
     app.state.service, app.state.jobs, app.state.redis = service, jobs, redis
 
     @app.on_event("startup")
@@ -125,7 +151,7 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
             log.exception("reconciliação na inicialização falhou")
 
     def require_token(request: Request) -> None:
-        expected = os.environ.get("OSINTIZADA_API_TOKEN")
+        expected = branding_env("API_TOKEN")
         if not expected:
             return
         given = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -146,6 +172,42 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    # --- identidade visual / documentação ---------------------------------------------------------
+
+    def branded_openapi() -> dict:
+        if app.openapi_schema is None:
+            schema = get_openapi(title=app.title, version=app.version, description=app.description,
+                                 routes=app.routes)
+            schema["info"]["x-logo"] = {"url": "/branding/logo.png", "altText": f"{PRODUCT_NAME}"}
+            app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = branded_openapi
+
+    @app.get("/", include_in_schema=False)
+    def home() -> HTMLResponse:
+        return HTMLResponse(home_html(__version__))
+
+    @app.get("/docs", include_in_schema=False)
+    def swagger_docs() -> HTMLResponse:
+        return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{PRODUCT_NAME} API — Swagger",
+                                   swagger_favicon_url="/branding/icon.png")
+
+    @app.get("/redoc", include_in_schema=False)
+    def redoc_docs() -> HTMLResponse:
+        return get_redoc_html(openapi_url="/openapi.json", title=f"{PRODUCT_NAME} API — ReDoc",
+                              redoc_favicon_url="/branding/icon.png")
+
+    @app.get("/branding/logo.png", include_in_schema=False)
+    def brand_logo() -> Response:
+        return Response(logo_bytes(LOGO_HEADER), media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/branding/icon.png", include_in_schema=False)
+    def brand_icon() -> Response:
+        return Response(logo_bytes(LOGO_ICON), media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
     # --- saúde / métricas ----------------------------------------------------------------------
 
     @app.get("/health")
@@ -162,7 +224,8 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
         with db.session() as s:
             job_counts = JobRepository(s).count_by_status()
         ok = (database["status"] == "ok" and redis_info["status"] == "ok" and worker["status"] == "ONLINE")
-        return {"status": "ok" if ok else "degraded", "api": {"status": "ok", "version": __version__},
+        return {"status": "ok" if ok else "degraded", "product": PRODUCT_NAME,
+                "api": {"status": "ok", "name": f"{PRODUCT_NAME} API", "version": __version__},
                 "database": database, "redis": redis_info, "worker": worker, "queue": queue, "jobs": job_counts}
 
     @app.get("/metrics", dependencies=auth)

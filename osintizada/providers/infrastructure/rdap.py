@@ -12,10 +12,10 @@ são mantidos como estão; nada de inferir "dono" além disso. Campos redigidos
 from __future__ import annotations
 
 import ipaddress
-import os
 import re
 from typing import Any
 
+from osintizada.branding import env as branding_env
 from osintizada.core.domains import host_entity_type
 from osintizada.core.enums import EntityType, IdentifierType, RelationType, SourceTier
 from osintizada.core.models import EntityRef, NormalizedIdentifier, ProviderResult
@@ -95,7 +95,7 @@ class RDAPProvider(APIProvider):
 
     @property
     def base_url(self) -> str:
-        return os.environ.get("OSINTIZADA_RDAP_BASE", DEFAULT_RDAP_BASE).rstrip("/")
+        return branding_env("RDAP_BASE", DEFAULT_RDAP_BASE).rstrip("/")
 
     def _path(self, identifier: NormalizedIdentifier) -> str:
         if identifier.type == IdentifierType.ASN:

@@ -13,7 +13,7 @@ from tests.fixtures.jobs_env import JobsEnv
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     for var in ("BRAVE_SEARCH_API_KEY", "TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION",
-                "OSINTIZADA_API_TOKEN", "GOOGLE_CSE_API_KEY", "GOOGLE_CSE_CX"):
+                "RINO_API_TOKEN", "OSINTIZADA_API_TOKEN", "GOOGLE_CSE_API_KEY", "GOOGLE_CSE_CX"):
         monkeypatch.delenv(var, raising=False)
     e = JobsEnv(tmp_path)
     e.settings.jobs.export_dir = str(tmp_path / "exports")
@@ -191,7 +191,7 @@ def test_providers_not_configured_show_missing_names_only(env, monkeypatch):
 
 
 def test_api_token(env, monkeypatch):
-    monkeypatch.setenv("OSINTIZADA_API_TOKEN", "segredo-de-teste-123")
+    monkeypatch.setenv("RINO_API_TOKEN", "segredo-de-teste-123")
     client = api(env)
     assert client.get("/health").status_code == 200
     assert client.get("/cases").status_code == 401

@@ -1,16 +1,18 @@
-# Stack: api + worker + redis + postgres.
+# RINO — Plataforma de Investigação OSINT. Stack: api + worker + redis + postgres.
 # Senhas NÃO ficam aqui: copie .env.example para .env (fora do Git) e defina
-# POSTGRES_PASSWORD, REDIS_PASSWORD e OSINTIZADA_API_TOKEN. Sem elas o compose recusa subir.
+# POSTGRES_PASSWORD, REDIS_PASSWORD e RINO_API_TOKEN. Sem elas o compose recusa subir.
 #
 #   docker compose up -d --build
 #   docker compose up -d --scale worker=3     # vários workers (claim atômico + lock por Case)
+
+name: rino
 
 x-app-env: &app-env
   DATABASE_URL: postgresql+psycopg://osintizada:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/osintizada
   REDIS_CACHE_URL: ${REDIS_CACHE_URL:-}   # opcional: cache em Redis separado (LRU)
   REDIS_URL: redis://:${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}@redis:6379/0
-  OSINTIZADA_CONFIG: /app/config/osintizada.yaml
-  OSINTIZADA_AUTO_MIGRATE: "1"
+  RINO_CONFIG: /app/config/rino.yaml
+  RINO_AUTO_MIGRATE: "1"
   # Providers opcionais (vazios → NOT_CONFIGURED, nunca simulados)
   BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
   GOOGLE_CSE_API_KEY: ${GOOGLE_CSE_API_KEY:-}
@@ -23,6 +25,7 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
+      # Banco/usuário mantêm o nome legado: já existem nos volumes de instalações anteriores ao RINO.
       POSTGRES_DB: osintizada
       POSTGRES_USER: osintizada
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
@@ -52,10 +55,11 @@ services:
 
   api:
     build: .
+    image: rino:latest
     environment:
       <<: *app-env
-      OSINTIZADA_API_TOKEN: ${OSINTIZADA_API_TOKEN:?defina OSINTIZADA_API_TOKEN no .env}
-    command: ["osintizada", "serve", "--host", "0.0.0.0", "--port", "8000"]
+      RINO_API_TOKEN: ${RINO_API_TOKEN:?defina RINO_API_TOKEN no .env}
+    command: ["rino", "serve", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -72,8 +76,9 @@ services:
 
   worker:
     build: .
+    image: rino:latest
     environment: *app-env
-    command: ["osintizada", "worker"]
+    command: ["rino", "worker"]
     volumes:
       - appdata:/app/data     # exports/artefatos compartilhados com a API
     depends_on:
@@ -81,7 +86,7 @@ services:
       redis: {condition: service_healthy}
     healthcheck:
       # Saudável = há ao menos um worker com heartbeat recente no Redis.
-      test: ["CMD", "osintizada", "worker-status", "--local", "--require-online"]
+      test: ["CMD", "rino", "worker-status", "--local", "--require-online"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -89,7 +94,12 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
+# Nomes fixos (prefixo legado "osintizada_"): preservam os dados de instalações anteriores ao RINO,
+# já que o nome do projeto compose mudou para "rino".
 volumes:
   pgdata:
+    name: osintizada_pgdata
   redisdata:
+    name: osintizada_redisdata
   appdata:
+    name: osintizada_appdata
