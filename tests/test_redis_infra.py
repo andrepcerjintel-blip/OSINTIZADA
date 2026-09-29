@@ -11,12 +11,7 @@ from osintizada.infrastructure.locks import DistributedLock, case_lock
 from osintizada.infrastructure.redis_cache import RedisCacheBackend, build_cache
 from osintizada.observability.metrics import Metrics
 from osintizada.providers.base import APIProvider
-from osintizada.resilience import (
-    MemoryCacheBackend,
-    ProviderRuntime,
-    RateLimiter,
-    cache_key,
-)
+from osintizada.resilience import MemoryCacheBackend, ProviderRuntime, RateLimiter, cache_key
 
 IDENT = normalize("example.com", IdentifierType.DOMAIN)
 

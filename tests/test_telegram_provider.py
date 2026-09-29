@@ -1,9 +1,4 @@
-from osintizada.core.enums import (
-    EntityType,
-    IdentifierType,
-    ProviderStatus,
-    RelationType,
-)
+from osintizada.core.enums import EntityType, IdentifierType, ProviderStatus, RelationType
 from osintizada.core.normalization import normalize
 from osintizada.providers.telegram.telethon_provider import TelegramProvider
 from osintizada.resilience import ProviderRuntime

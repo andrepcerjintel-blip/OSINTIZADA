@@ -3,19 +3,10 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from osintizada.core.enums import (
-    EntityType,
-    IdentifierType,
-    ProviderStatus,
-    RelationType,
-    SourceType,
-)
+from osintizada.core.enums import EntityType, IdentifierType, ProviderStatus, RelationType, SourceType
 from osintizada.core.normalization import normalize
 from osintizada.providers.archive.wayback import WaybackProvider
-from osintizada.providers.infrastructure.crtsh import (
-    CertificateTransparencyProvider,
-    normalize_ct_name,
-)
+from osintizada.providers.infrastructure.crtsh import CertificateTransparencyProvider, normalize_ct_name
 from osintizada.providers.infrastructure.dns import DNSProvider, NXDomain
 from osintizada.providers.infrastructure.rdap import RDAPProvider
 from osintizada.resilience import ProviderRuntime

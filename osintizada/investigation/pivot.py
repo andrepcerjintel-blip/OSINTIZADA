@@ -19,12 +19,7 @@ from dataclasses import dataclass, field
 
 from osintizada.config import Settings, get_settings
 from osintizada.core.domains import get_domain_parser
-from osintizada.core.enums import (
-    IDENTIFIER_PLATFORM,
-    EntityType,
-    IdentifierType,
-    PivotStatus,
-)
+from osintizada.core.enums import IDENTIFIER_PLATFORM, EntityType, IdentifierType, PivotStatus
 from osintizada.core.models import NormalizedIdentifier
 from osintizada.core.normalization import normalize
 

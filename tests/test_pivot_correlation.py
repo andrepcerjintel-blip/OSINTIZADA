@@ -1,23 +1,13 @@
 from osintizada.config import Settings
 from osintizada.core.canonical import entity_fingerprint_hash
-from osintizada.core.enums import (
-    CorrelationLevel,
-    EntityType,
-    IdentifierType,
-    PivotStatus,
-    RelationType,
-)
+from osintizada.core.enums import CorrelationLevel, EntityType, IdentifierType, PivotStatus, RelationType
 from osintizada.investigation.correlation import (
     CorrelationEngine,
     RelationView,
     detect_conflicts,
     is_rare_handle,
 )
-from osintizada.investigation.pivot import (
-    EntitySnapshot,
-    PivotEngine,
-    entity_to_identifier,
-)
+from osintizada.investigation.pivot import EntitySnapshot, PivotEngine, entity_to_identifier
 
 
 def snap(etype, value, depth=1, confidence=0.9, origin="DISCOVERED", id=None, display=None):
