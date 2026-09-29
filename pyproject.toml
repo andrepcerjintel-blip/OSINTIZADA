@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osintizada"   # nome de distribuição legado (evita duas instalações do mesmo pacote); produto: RINO
-version = "0.6.0"
+version = "0.7.0"
 description = "RINO — Plataforma de Investigação OSINT: identificadores, pivôs, correlação e proveniência."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 telegram = ["telethon>=1.36"]
 postgres = ["psycopg[binary]>=3.1"]
+ai-cloud = ["anthropic>=1.9"]   # ClaudeProvider (SDK oficial); Llama local e OpenAI usam só HTTP
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "fakeredis[lua]>=2.23"]
 
 [project.scripts]

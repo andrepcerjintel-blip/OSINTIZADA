@@ -225,6 +225,94 @@ class PivotSettings(BaseModel):
     ])
 
 
+class LlamaSettings(BaseModel):
+    """Llama local: Ollama (padrão) ou servidor OpenAI-compatível (llama.cpp, LM Studio, vLLM…).
+
+    Env: RINO_AI_LLAMA_ENABLED, RINO_AI_LLAMA_BASE_URL, RINO_AI_LLAMA_MODEL, RINO_AI_LLAMA_RUNTIME,
+    RINO_AI_LOCAL_TIMEOUT. O modelo NÃO tem padrão no código: sem modelo → NOT_CONFIGURED.
+    """
+
+    enabled: bool = False
+    runtime: str = "ollama"                       # ollama | openai (endpoint OpenAI-compatível local)
+    base_url: str = "http://127.0.0.1:11434"
+    model: str | None = None
+    timeout_seconds: float = 180.0                # CPU/offload pode ser lento; nunca infinito
+    max_input_chars: int = 16_000                 # acima disso: chunk → processa → agrega (nada truncado)
+    max_batch_items: int = 20                     # itens por requisição em lote
+    temperature: float = 0.0
+
+
+class ClaudeSettings(BaseModel):
+    """Claude via SDK oficial ``anthropic`` (extra opcional ``ai-cloud``). Credencial: ANTHROPIC_API_KEY."""
+
+    enabled: bool = True                          # sem SDK/credencial → NOT_CONFIGURED
+    model: str = "claude-opus-5-5"                # env RINO_AI_CLAUDE_MODEL
+    effort: str = "medium"                        # low | medium | high | xhigh | max
+    max_tokens: int = 16_000
+    fallbacks: bool = True                        # fallback de recusa no servidor (Claude API)
+    timeout_seconds: float = 120.0                # env RINO_AI_CLOUD_TIMEOUT
+    max_input_chars: int = 400_000
+    max_batch_items: int = 50
+    # US$ por milhão de tokens (entrada, saída) — só para estimar custo; ajuste se o preço mudar.
+    price_per_mtok: dict[str, list[float]] = Field(default_factory=lambda: {"claude-opus-5-5": [4.0, 20.0]})
+
+
+class OpenAISettings(BaseModel):
+    """OpenAI (ou endpoint remoto compatível). Chave: OPENAI_API_KEY; modelo obrigatório (RINO_AI_OPENAI_MODEL)."""
+
+    enabled: bool = True
+    base_url: str = "https://api.openai.com"
+    model: str | None = None
+    timeout_seconds: float = 120.0
+    max_input_chars: int = 200_000
+    max_batch_items: int = 50
+    price_per_mtok: dict[str, list[float]] = Field(default_factory=dict)   # preencha se quiser estimativa
+
+
+class AIPrivacySettings(BaseModel):
+    """PrivacyGate: o que NUNCA sai da máquina (mesmo em HYBRID/CLOUD)."""
+
+    # Categorias: restricted_sources | credentials | raw_auth_tokens | local_files_marked_private
+    never_send_to_cloud: list[str] = Field(default_factory=lambda: [
+        "restricted_sources", "credentials", "raw_auth_tokens", "local_files_marked_private"])
+    restricted_sources: list[str] = Field(default_factory=list)   # providers cujo conteúdo não vai à nuvem
+
+
+class AISettings(BaseModel):
+    """Camada de IA auxiliar. A IA interpreta evidência; nunca a produz. Desligada, o Core segue igual.
+
+    mode (env RINO_AI_MODE; um Case pode RESTRINGIR com ``ai_mode``):
+      LOCAL_ONLY — só o modelo local; nenhuma chamada de rede a IA externa (padrão);
+      HYBRID     — cada tarefa vai para onde ``routing`` manda (padrão: local); nuvem só nas rotas
+                   "cloud" ou como fallback se ``allow_cloud_fallback`` for true;
+      CLOUD      — provider de nuvem preferencial (``cloud_provider``) primeiro; local como alternativa.
+    """
+
+    mode: str = "LOCAL_ONLY"
+    local_provider: str = "llama"
+    cloud_provider: str = "claude"                # claude | openai
+    routing: dict[str, str] = Field(default_factory=lambda: {
+        "classify": "local", "extract": "local", "summarize": "local", "translate": "local",
+        "query_generation": "local", "relevance": "local", "complex_analysis": "cloud", "final_report": "cloud"})
+    allow_cloud_fallback: bool = False            # HYBRID: falha local → nuvem? (padrão: não)
+    profiles: dict[str, str | None] = Field(default_factory=lambda: {"fast": None, "balanced": None, "quality": None})
+    profile: str | None = None                    # env RINO_AI_PROFILE → usa profiles[profile] como modelo local
+    health_cache_seconds: float = 30.0
+    cache_ttl_seconds: int = 7 * 86400            # mesma análise não é refeita (0 desativa)
+    retries: int = 1                              # só erros transitórios (timeout, conexão, 5xx, 429)
+    breaker_failure_threshold: int = 3
+    breaker_recovery_seconds: float = 60.0
+    max_items: int = 200                          # itens considerados por análise (o recorte é registrado)
+    relevance_threshold: float = 0.7              # triagem: score ≥ → alto interesse
+    ambiguous_band: list[float] = Field(default_factory=lambda: [0.4, 0.6])   # triagem: revisão opcional na nuvem
+    classification_labels: list[str] = Field(default_factory=lambda: [
+        "perfil", "notícia", "documento", "fórum", "código", "comércio", "infraestrutura", "outro"])
+    privacy: AIPrivacySettings = Field(default_factory=AIPrivacySettings)
+    llama: LlamaSettings = Field(default_factory=LlamaSettings)
+    claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
+    openai: OpenAISettings = Field(default_factory=OpenAISettings)
+
+
 class CorrelationSettings(BaseModel):
     weights: dict[str, int] = Field(default_factory=lambda: {
         "same_telegram_id": 60, "same_phone": 50, "same_email": 45, "same_username_rare": 25,
@@ -257,6 +345,7 @@ class Settings(BaseModel):
     jobs: JobSettings = Field(default_factory=JobSettings)
     images: ImageSettings = Field(default_factory=ImageSettings)
     correlation: CorrelationSettings = Field(default_factory=CorrelationSettings)
+    ai: AISettings = Field(default_factory=AISettings)
 
     def mode(self, mode: SearchMode) -> ModeProfile:
         return self.modes[mode]

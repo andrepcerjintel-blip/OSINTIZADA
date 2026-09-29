@@ -27,6 +27,7 @@ from osintizada.core.enums import AuditEvent
 from osintizada.db import Database
 from osintizada.db.tables import utcnow
 from osintizada.repositories import (
+    AIAnnotationRepository,
     AuditRepository,
     CaseRepository,
     ConflictRepository,
@@ -89,6 +90,9 @@ class ExportService:
                     "last": audit[-1].timestamp.isoformat() if audit else None,
                 },
                 "provider_status": {k: dict(v) for k, v in provider_status.items()},
+                # Interpretações de IA: separadas das evidências e marcadas como tal.
+                "ai_annotations": [row_to_dict(a) | {"ai_generated": True}
+                                   for a in AIAnnotationRepository(s).list(case_id, limit=1000)],
                 "limitations": LIMITATIONS,
             }
         data["timeline"] = [e.model_dump() for e in TimelineService(self.db).build(case_id)]
@@ -106,6 +110,7 @@ class ExportService:
             "entities.csv": bundle["entities"], "evidence.csv": bundle["evidence"],
             "relationships.csv": bundle["relationships"], "timeline.csv": bundle["timeline"],
             "searches.csv": bundle["searches"], "seeds.csv": bundle["seeds"],
+            "ai_annotations.csv": bundle.get("ai_annotations", []),
         }
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -189,6 +194,16 @@ th{{background:{c['graphite']};color:{c['paper']}}}code{{font-size:.85em}}.tag{{
             f'<td>{_link(x["source_url"], x["source_name"])}</td><td>{e(x["source_type"])} / {e(x["temporality"])}</td>'
             f'<td>{e(x["query"])}</td><td>{e(x["collected_at"])}</td><td><code>{e(x["content_hash"][:16])}</code></td></tr>'
             for x in bundle["evidence"]) + "</table>")
+        ai_rows = bundle.get("ai_annotations") or []
+        if ai_rows:
+            parts.append("<h2>Análises por IA</h2><p><b>Interpretação gerada por IA, não evidência.</b> Não confirma "
+                         "identidade; cada análise indica provider, modelo, modo de privacidade e as evidências usadas.</p>"
+                         "<table><tr><th>Data</th><th>Análise</th><th>Status</th><th>Provider / modelo</th><th>Modo</th>"
+                         "<th>Resultado</th><th>Evidências usadas</th></tr>" + "".join(
+                f"<tr><td>{e(str(a['created_at']))}</td><td>{e(a['operation'])}</td><td>{e(a['status'])}</td>"
+                f"<td>{e(str(a.get('provider') or '—'))} / {e(str(a.get('model') or '—'))}</td><td>{e(a['mode'])}</td>"
+                f"<td>{_ai_html(a, e)}</td><td>{evlinks((a.get('input_refs') or {}).get('evidence_ids', [])[:20])}</td></tr>"
+                for a in ai_rows) + "</table>")
         parts.append("<h2>Provider Status</h2><table><tr><th>Provider</th><th>Execuções por status</th></tr>" + "".join(
             f"<tr><td>{e(p)}</td><td>{e(', '.join(f'{k}: {v}' for k, v in sorted(st.items())))}</td></tr>"
             for p, st in sorted(bundle["provider_status"].items())) + "</table>")
@@ -237,3 +252,31 @@ def _link(url: str | None, label: str | None) -> str:
     if url and url.startswith(("http://", "https://")):
         return f'<a href="{html.escape(url, quote=True)}" rel="noopener noreferrer">{text}</a>'
     return text
+
+
+def _ai_html(annotation: dict, e) -> str:
+    """Resumo legível da saída de uma análise de IA (texto sempre escapado)."""
+    out = annotation.get("output") or {}
+    if annotation.get("status") not in ("OK", "PARTIAL"):
+        return e(annotation.get("reason") or annotation.get("status") or "")
+    op = annotation.get("operation")
+    if "summary" in out:
+        points = "".join(f"<li>{e(str(p))}</li>" for p in out.get("key_points", []))
+        return f"{e(out['summary'])}<ul>{points}</ul>"
+    if "queries" in out:
+        return "<ul>" + "".join(f"<li><code>{e(q['query'])}</code> — {e(q.get('reason', ''))}</li>"
+                                for q in out["queries"]) + "</ul>"
+    if "candidates" in out:
+        return "<ul>" + "".join(f"<li>{e(c['type'])}: {e(c['value'])} (IA {c.get('ai_confidence') or '?'})</li>"
+                                for c in out["candidates"]) + "</ul>"
+    if op == "relevance":
+        stages = out.get("stages") or {}
+        head = e(" → ".join(f"{k}: {v}" for k, v in stages.items()))
+        return head + "<ul>" + "".join(f"<li>{e(i['id'][:8])}: {i['score']:.2f} — {e(i.get('reason', ''))}</li>"
+                                       for i in out.get("items", [])[:20]) + "</ul>"
+    if op == "classify":
+        return e(", ".join(f"{k}: {v}" for k, v in (out.get("counts") or {}).items()))
+    if op == "translate":
+        return "<ul>" + "".join(f"<li>[{e(i.get('source_language', ''))}] {e(i['translation'][:300])}</li>"
+                                for i in out.get("items", [])[:10]) + "</ul>"
+    return e(json.dumps(out, ensure_ascii=False)[:500])

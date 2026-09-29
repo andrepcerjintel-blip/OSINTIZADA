@@ -16,6 +16,8 @@ Comandos:
   worker [--burst]           processo worker (fila Redis/RQ, heartbeat, reconciliador)
   reconcile                  executa uma reconciliação de jobs (recupera abandonados, republica)
   db upgrade                 aplica migrações (Alembic)
+  doctor                     diagnóstico (banco, Redis, executor, providers, IA, hardware)
+  ai status|run|task         IA auxiliar (Llama local / Claude / OpenAI)
 """
 
 from __future__ import annotations
@@ -350,6 +352,110 @@ def cmd_worker_status(args: argparse.Namespace) -> int:
     return 0 if (not args.require_online or status["status"] == "ONLINE") else 1
 
 
+def cmd_ai(args: argparse.Namespace) -> int:
+    """IA auxiliar: status dos providers, análises de um Case e tarefas avulsas sobre texto."""
+    from osintizada.ai.router import build_ai_router
+    from osintizada.ai.service import AIService
+    from osintizada.config import get_settings
+    from osintizada.db import Database
+
+    settings = get_settings()
+    router = build_ai_router(settings)
+
+    async def run() -> Any:
+        try:
+            if args.ai_command == "status":
+                return await router.status()
+            db = Database()
+            service = AIService(db, router, settings.ai.max_items)
+            if args.ai_command == "run":
+                return await service.run_operation(args.case_id, args.operation)
+            task = {"classify": "CLASSIFY_CONTENT"}.get(args.task, args.task.upper())
+            return await service.run_text_task(task, args.text, labels=args.labels,
+                                               target_language=args.lang, preferred=args.provider)
+        finally:
+            await router.aclose()
+
+    result = asyncio.run(run())
+    _dump(result)
+    status = result.get("status")
+    return 0 if status in ("OK", "READY", "PARTIAL") else 1
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Diagnóstico: configuração, banco, Redis, executor, providers OSINT, IA e hardware (sem segredos)."""
+    from osintizada.ai.hardware import hardware_status
+    from osintizada.ai.router import build_ai_router
+    from osintizada.bootstrap import database_status
+    from osintizada.config import DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH
+    from osintizada.db import Database
+    from osintizada.infrastructure.redis_client import RedisNotConfigured, create_redis, redis_status, redis_url
+    from osintizada.jobs.embedded import resolve_executor
+
+    settings = get_settings()
+    report: dict[str, Any] = {"version": __version__}
+    config = branding_env("CONFIG") or (DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.is_file() else LEGACY_CONFIG_PATH)
+    report["config"] = str(config)
+    report["database"] = database_status(Database())
+    try:
+        report["redis"] = redis_status(create_redis(settings=settings))
+    except RedisNotConfigured:
+        report["redis"] = {"status": "NOT_CONFIGURED"}
+    except Exception as exc:  # noqa: BLE001
+        report["redis"] = {"status": "UNAVAILABLE", "error": type(exc).__name__}
+    report["executor"] = resolve_executor(settings, redis_configured=bool(redis_url(settings)))
+    providers = load_builtin_providers().create_all(settings)
+    report["osint_providers"] = {p.name: ("CONFIGURED" if p.is_configured() else "NOT_CONFIGURED") for p in providers}
+
+    async def ai_status():
+        router = build_ai_router(settings)
+        try:
+            return await router.status()
+        finally:
+            await router.aclose()
+
+    try:
+        report["ai"] = asyncio.run(ai_status())
+    except ValueError as exc:
+        report["ai"] = {"mode": "INVÁLIDO", "status": "ERROR", "error": str(exc), "providers": []}
+    report["hardware"] = hardware_status()
+    if args.json:
+        _dump(report)
+        return 0
+    ai = report["ai"]
+    by = {p["provider"]: p for p in ai.get("providers", [])}
+
+    def line(label: str, value: str) -> None:
+        print(f"{label:<15}{value}")
+
+    def prov(name: str) -> str:
+        p = by.get(name)
+        if not p:
+            return "—"
+        extra = f" (faltando: {', '.join(p['missing'])})" if p.get("missing") else (
+            f" — {p['message']}" if p.get("message") and p["status"] != "READY" else "")
+        return p["status"] + extra
+
+    print(f"{PRODUCT_NAME} {__version__} — doctor\n")
+    line("CONFIG", report["config"])
+    db = report["database"]
+    line("DATABASE", db["status"] + ("" if db.get("status") == "ok" else f" {db.get('error', '')}"))
+    line("REDIS", report["redis"]["status"])
+    line("EXECUTOR", "embedded (o servidor executa os jobs)" if report["executor"] == "embedded"
+         else "redis (processos rino worker)")
+    configured = [n for n, s in report["osint_providers"].items() if s == "CONFIGURED"]
+    line("PROVIDERS", f"{len(configured)}/{len(report['osint_providers'])} configurados")
+    line("AI MODE", ai.get("mode", "—"))
+    line("LLAMA", prov("ai.llama"))
+    line("LOCAL MODEL", (by.get("ai.llama") or {}).get("model") or "— (defina RINO_AI_LLAMA_MODEL)")
+    line("CLAUDE", prov("ai.claude"))
+    line("OPENAI", prov("ai.openai"))
+    hw = report["hardware"]
+    gpus = ", ".join(f"{g['name']} ({g['vram_mb']} MB)" for g in hw["gpus"]) or "nenhuma detectada"
+    line("HARDWARE", f"{hw['cpu_count']} CPUs · {hw['ram_gb'] or '?'} GB RAM · GPU: {gpus}")
+    return 0 if db.get("status") == "ok" else 1
+
+
 def cmd_reconcile(args: argparse.Namespace) -> int:
     from osintizada.db import Database
     from osintizada.jobs.recovery import JobRecoveryService
@@ -448,6 +554,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("worker", help="Inicia um worker de jobs (requer REDIS_URL)")
     p.add_argument("--burst", action="store_true", help="Processa a fila até esvaziar e encerra")
     p.set_defaults(func=cmd_worker)
+
+    p = sub.add_parser("ai", help="IA auxiliar (Llama local, Claude, OpenAI): status e análises")
+    ai_sub = p.add_subparsers(dest="ai_command", required=True)
+    ai_sub.add_parser("status", help="Modo de privacidade e estado dos providers de IA")
+    q = ai_sub.add_parser("run", help="Análise de IA de um Case (gravada como anotação, nunca evidência)")
+    q.add_argument("case_id")
+    q.add_argument("operation", choices=["summary", "pivots", "extract", "relevance", "classify", "translate"])
+    q = ai_sub.add_parser("task", help="Tarefa avulsa sobre um texto (não persistida)")
+    q.add_argument("task", choices=["classify", "translate", "extract_entities"])
+    q.add_argument("text")
+    q.add_argument("--labels", nargs="*", help="Rótulos permitidos (classify)")
+    q.add_argument("--lang", default="pt", help="Idioma de destino (translate)")
+    q.add_argument("--provider", help="Preferência de provider (respeita o modo de privacidade)")
+    p.set_defaults(func=cmd_ai)
+
+    p = sub.add_parser("doctor", help="Diagnóstico: banco, Redis, executor, providers, IA e hardware")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("worker-status", help="Workers ONLINE/STALE/OFFLINE (heartbeat no Redis)")
     p.add_argument("--local", action="store_true", help="Somente workers deste host/container")

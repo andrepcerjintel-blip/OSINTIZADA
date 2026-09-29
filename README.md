@@ -39,7 +39,22 @@ filtrar as entidades e gerar o relatório HTML, JSON ou CSV. Sem `REDIS_URL`, o 
 embutido** (fila no banco). Se o servidor for encerrado no meio de uma pesquisa, ela é retomada do último
 checkpoint quando ele voltar. Para vários workers em paralelo, use Redis + `rino worker` (abaixo).
 
-## Estado atual (v0.6.0)
+## IA local (Llama) — opcional
+
+O RINO pode usar um **Llama local** (via Ollama) para resumir, triar, extrair, traduzir e sugerir consultas
+sobre as evidências. A IA **interpreta** evidências e não as produz. Tudo o que ela sugere fica marcado
+(DERIVED / AI_SUGGESTED) para revisão, e nada é executado sozinho. O padrão é `LOCAL_ONLY`: nada sai da máquina.
+
+1. Instale o Ollama por conta própria (https://ollama.com) e deixe-o rodando.
+2. Baixe um modelo que caiba na sua máquina: `ollama pull <modelo>` (com pouca VRAM, use um menor ou quantizado).
+3. `RINO_AI_LLAMA_ENABLED=true`, `RINO_AI_LLAMA_BASE_URL=http://127.0.0.1:11434`, `RINO_AI_LLAMA_MODEL=<modelo>`.
+4. `rino doctor` deve mostrar `LLAMA READY`.
+5. Na tela, use os botões de "Análise por IA" nos resultados de um Case.
+
+O RINO nunca baixa modelos sozinho. Claude e OpenAI são opcionais (modo `HYBRID` ou `CLOUD`). Guia completo,
+modos, privacidade e solução de problemas: [docs/AI.md](docs/AI.md).
+
+## Estado atual (v0.7.0)
 
 | Componente | Estado |
 |---|---|
@@ -57,6 +72,7 @@ checkpoint quando ele voltar. Para vários workers em paralelo, use Redis + `rin
 | Timeline (momento do fato) e exports JSON/CSV/HTML | ✅ |
 | API FastAPI (SSE, `/health`, `/metrics`) + CLI + logs JSON com `case_id`/`job_id` | ✅ |
 | Tela de pesquisa no navegador + executor embutido (sem Redis) | ✅ |
+| IA auxiliar: Llama local (Ollama), Claude, OpenAI; AIRouter com LOCAL_ONLY/HYBRID/CLOUD, PrivacyGate, cache | ✅ (Llama real: não validado ao vivo) |
 | UI, Tor, Credilink, GitHub, Brasil OSINT | ⏳ ver [roadmap](docs/ARCHITECTURE.md#9-roadmap) |
 
 Nenhum resultado é simulado. Provider sem credencial aparece como `NOT_CONFIGURED`, falha aparece como
@@ -130,7 +146,7 @@ curl -N localhost:8000/jobs/<job_id>/events   # progresso ao vivo (SSE)
 | `GET /cases/{id}/pivots`, `/correlations`, `/conflicts` | decisões de pivô, scores explicáveis, contradições |
 | `GET /providers`, `/providers/health`, `POST /providers/{name}/validate-credentials` | integrações (variáveis faltantes, nunca valores) |
 
-CLI: `rino worker [--burst]`, `rino worker-status [--local] [--require-online]`, `rino reconcile`.
+CLI: `rino doctor` (diagnóstico, inclusive IA e hardware), `rino ai status|run|task`, `rino worker [--burst]`, `rino worker-status [--local] [--require-online]`, `rino reconcile`.
 
 ## Variáveis de ambiente (principais)
 
@@ -140,6 +156,7 @@ CLI: `rino worker [--burst]`, `rino worker-status [--local] [--require-online]`,
 | `REDIS_URL` (+ `REDIS_CACHE_URL` opcional) | fila, locks, cache compartilhado, heartbeats |
 | `RINO_API_TOKEN` | exige `Authorization: Bearer` na API (obrigatório fora de localhost) |
 | `RINO_CONFIG` | arquivo de configuração (padrão `config/rino.yaml`) |
+| `RINO_AI_MODE`, `RINO_AI_LLAMA_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | IA auxiliar (opcional; [docs/AI.md](docs/AI.md)) |
 | `RINO_EXECUTOR` | `auto` (padrão), `redis` (workers separados) ou `embedded` (o servidor executa) |
 | `BRAVE_SEARCH_API_KEY`, `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` | buscadores |
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION` | Telegram |
@@ -164,7 +181,7 @@ Detalhes em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Testes
 
 ```bash
-pytest          # 426 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
+pytest          # 467 testes; rede e Redis simulados (fakeredis + RQ real), nenhuma chamada externa
 # mesmos testes de jobs contra PostgreSQL real (banco descartável — o schema é recriado):
 RINO_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/test_jobs.py
 ```
@@ -172,6 +189,7 @@ RINO_TEST_DATABASE_URL=postgresql+psycopg://user@host/banco_teste pytest tests/t
 ## Documentação
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): fluxo, jobs e recuperação, Redis, SSRF, modelo de dados, roadmap
+- [docs/AI.md](docs/AI.md): IA auxiliar (Llama/Ollama, modos, privacidade, tarefas, troubleshooting)
 - [docs/PROVIDERS.md](docs/PROVIDERS.md): contrato, providers existentes e como criar um novo
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): modos, orçamentos, pivôs, correlação, banco e secrets
 - [BACKLOG.md](BACKLOG.md): itens futuros

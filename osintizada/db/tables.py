@@ -322,3 +322,37 @@ class JobEventRow(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     event_type: Mapped[str] = mapped_column(String(40))
     data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class AIAnnotationRow(Base):
+    """Interpretação gerada por IA sobre dados do Case — NUNCA evidência.
+
+    Guarda o que foi pedido (operação/tarefa), quem respondeu (provider/modelo/modo), com qual prompt
+    (``prompt_version``) e A PARTIR DE QUAIS dados (``input_refs``: ids de evidência/entidade), além das
+    tentativas do roteador. Nada aqui altera entidades, evidências ou relações.
+    """
+
+    __tablename__ = "ai_annotations"
+
+    id: Mapped[str] = _id()
+    case_id: Mapped[str] = _case_fk()
+    job_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = _created()
+    operation: Mapped[str] = mapped_column(String(40), index=True)
+    task: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(30))
+    mode: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_kind: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(40))
+    input_refs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    output: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    attempts: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)   # sha256 da saída validada
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)            # tokens / custo externo estimado
+    classification: Mapped[str] = mapped_column(String(20), default="DERIVED")
+    # Revisão humana: {"decision": "ACCEPTED"|"REJECTED", "notes": ..., "at": ...}; vazio = AI_SUGGESTED.
+    review: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

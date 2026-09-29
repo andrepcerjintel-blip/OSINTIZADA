@@ -4,6 +4,61 @@ O projeto se chamava OSINTIZADA até a versão 0.4.1. As entradas antigas mantê
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [0.7.0] — 2026-09-29 — IA auxiliar: Llama local + camada híbrida
+
+### Adicionado
+- **Camada de IA** (`osintizada/ai/`), independente do Core:
+  - contrato `AIProvider` com `classify_content`, `extract_entities`, `summarize`, `translate`,
+    `generate_queries` e `assess_relevance`, sempre com saída JSON validada por esquema;
+  - `LlamaProvider` para Ollama ou servidor OpenAI-compatível (llama.cpp, LM Studio, vLLM), sem modelo fixo
+    e sem download automático. Estados: `READY`, `NOT_CONFIGURED`, `MODEL_NOT_FOUND` (com a instrução
+    `ollama pull`), `UNAVAILABLE` e `DEGRADED`;
+  - `ClaudeProvider` (SDK oficial `anthropic`, extra `ai-cloud`) e `OpenAIProvider`; sem credenciais,
+    `NOT_CONFIGURED`.
+- **AIRouter**:
+  - modos `LOCAL_ONLY` (padrão, sem nenhuma chamada de rede externa), `HYBRID` (tabela `routing` e
+    `allow_cloud_fallback`) e `CLOUD`;
+  - `ai_mode` por Case, que só restringe o modo global;
+  - preferência de provider, limites de tamanho sem truncar, cache de IA, retry só para erros transitórios
+    e circuit breaker.
+- **PrivacyGate**: redige segredos antes de **qualquer** modelo; material restrito, privado ou com
+  credenciais nunca vai à nuvem.
+- **Prompts versionados** (`entity_extraction_v1`, `summarization_v1`, `relevance_v1`, …) com proteção contra
+  prompt injection (dados isolados, aviso de conteúdo não confiável, delimitadores neutralizados); reparo
+  simples de JSON e `AI_PARSE_ERROR`.
+- **Análises como Jobs** (`POST /cases/{id}/ai/analyze`):
+  - resumo com map-reduce;
+  - triagem por relevância em estágios;
+  - extração que cria entidades DERIVED ligadas à evidência original por `DERIVED_FROM`, marcadas
+    `AI_SUGGESTED`, com revisão humana `AI_REVIEWED`;
+  - consultas sugeridas, que não são executadas sozinhas;
+  - tradução e classificação em lote.
+- **Proveniência** (`ai_annotations`, migração `0003_ai`): provider, modelo, tarefa, `prompt_version`,
+  timestamp, ids de evidência de entrada, `output_hash` e uso de tokens com custo estimado (local: custo
+  externo 0).
+- **Auditoria:** `AI_ANALYSIS_STARTED`, `AI_ANALYSIS_COMPLETED`, `AI_ANALYSIS_FAILED`, `AI_FALLBACK_USED` e
+  `AI_REVIEWED`.
+- **Métricas:** `ai_requests`, `ai_latency_seconds`, `ai_failures`, `ai_cache_hits`, `ai_local_requests`,
+  `ai_cloud_requests` e `ai_fallbacks`.
+- **API:**
+  - `GET /ai/status`, `GET /ai/providers`, seção `ai` no `/health` (sem chaves);
+  - revisão de análises e de entidades;
+  - `PUT /cases/{id}/ai-mode`;
+  - `POST /ai/tasks`.
+- **CLI:** `rino doctor` (banco, Redis, executor, providers, IA e hardware) e `rino ai status|run|task`.
+- **Tela:** indicador discreto "AI: LOCAL/HYBRID/CLOUD · provider" e painel "Análise por IA" nos resultados.
+- **Exports:** seção "Análises por IA" (JSON, CSV `ai_annotations.csv` e HTML), marcada como interpretação.
+- Documentação em `docs/AI.md`, com perfis FAST/BALANCED/QUALITY mapeados para modelos escolhidos pelo
+  usuário e timeouts separados para IA local e de nuvem.
+
+### Alterado
+- A correlação ignora entidades sugeridas por IA que ainda não foram aceitas por um humano.
+
+### Validação
+- Testes automáticos com servidores simulados (Ollama, OpenAI-compatível e API da Anthropic via SDK).
+- Fluxo servidor → Job → tela exercitado contra um emulador da API do Ollama.
+- Llama real: **NOT_LIVE_VALIDATED** (sem acesso à rede para baixar modelos neste ambiente).
+
 ## [0.6.0] — 2026-09-29 — Pesquisa pelo navegador, executada no servidor
 
 ### Adicionado

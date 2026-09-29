@@ -57,6 +57,8 @@ class WorkerContext:
     worker_heartbeat: WorkerHeartbeat | None = None
     # Conexão exclusiva para escutar a fila (BLPOP bloqueante, sem timeout de leitura).
     queue_redis: Any = None
+    # Roteador de IA (criado sob demanda na 1ª análise de IA; injetável em testes).
+    ai_router: Any = None
 
     _current: ClassVar[WorkerContext | None] = None
 
@@ -194,7 +196,28 @@ class JobRunner:
             result = ExportService(self.ctx.db, self.ctx.settings).export_to_file(case_id, fmt, job_id)
             control.progress("EXPORTED", progress=100)
             return result
+        if job_type == JobType.AI_ANALYSIS:
+            return self._ai_analysis(job_id, case_id, control)
         raise ValueError(f"Tipo de job desconhecido: {job_type}")
+
+    def _ai_analysis(self, job_id: str, case_id: str, control: JobExecutionControl) -> dict:
+        from osintizada.ai.router import build_ai_router
+        from osintizada.ai.service import AIService
+
+        with self.ctx.db.session() as s:
+            request = dict(JobRepository(s).get(job_id).request or {})
+        if self.ctx.ai_router is None:
+            # Cache de IA = o mesmo CacheBackend do runtime de providers (memória ou Redis compartilhado).
+            cache = getattr(getattr(self.ctx.investigation.orchestrator, "runtime", None), "cache", None)
+            self.ctx.ai_router = build_ai_router(self.ctx.settings, cache=cache)
+        control.progress("AI_ANALYSIS", progress=10)
+        service = AIService(self.ctx.db, self.ctx.ai_router, self.ctx.settings.ai.max_items)
+        annotation = self.ctx.loop.run_until_complete(
+            service.run_operation(case_id, request.get("operation"), job_id, **(request.get("params") or {})))
+        control.progress("AI_COMPLETED", progress=100)
+        # IA indisponível NÃO é falha do job (não gera retry): o resultado registra o motivo.
+        return {"annotation_id": annotation["id"], "ai_status": annotation["status"],
+                "provider": annotation["provider"], "model": annotation["model"]}
 
     def _investigation(self, job_id: str, case_id: str, control: JobExecutionControl) -> dict:
         service = self.ctx.investigation

@@ -14,7 +14,7 @@ WORKDIR /app
 COPY pyproject.toml README.md alembic.ini ./
 COPY osintizada ./osintizada
 COPY config ./config
-RUN pip install ".[postgres]" \
+RUN pip install ".[postgres,ai-cloud]" \
     && useradd --create-home --uid 10001 rino \
     && mkdir -p /app/data && chown rino:rino /app/data
 

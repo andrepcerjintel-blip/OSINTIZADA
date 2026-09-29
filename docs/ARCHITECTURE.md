@@ -9,6 +9,7 @@
 | 0.1.0 | 1 — Core | identificadores, normalização, modelos, planner, evidência, contrato de providers |
 | 0.2.0 | 2a–2c | resiliência (rate limit, retry, breaker, cache), SSRF, extractors, search engines |
 | 0.3.0 | 3 — Ciclo investigativo real | PSL, persistência, Case, providers de infraestrutura, Pivot/Correlation, API |
+| 0.7.0 | IA auxiliar | Llama local (Ollama), Claude, OpenAI; AIRouter, PrivacyGate, análises como Jobs (ver §12 e docs/AI.md) |
 | 0.6.0 | Uso pelo navegador | tela de pesquisa em `GET /` e executor embutido (sem Redis) |
 | 0.5.0 | Identidade | projeto renomeado de OSINTIZADA para **RINO**; logo oficial integrada (ver §11) |
 | 0.4.0 | 4 — Resiliência, jobs, segurança | jobs persistentes + worker + recuperação, Redis, SSRF com pinning, avatar, timeline, exports |
@@ -194,6 +195,13 @@ osintizada/
     search/                      base.py (SearchEngineProvider), brave.py, google_cse.py
     telegram/                    telethon_provider.py
     local/                       identifier_analysis.py
+  ai/                            IA auxiliar (o Core não importa este pacote)
+    base.py / models.py          contrato AIProvider, tipos, esquemas de saída
+    prompts.py                   prompts versionados + proteção contra prompt injection
+    router.py / privacy.py       AIRouter (modos, rotas, cache, breaker, retry) e PrivacyGate
+    service.py                   análises sobre Cases (map-reduce, triagem, DERIVED, revisão humana)
+    providers/                   llama.py (Ollama/OpenAI-compatível), claude.py (SDK anthropic), openai.py
+    hardware.py                  CPU/RAM/GPU (informativo)
   jobs/
     service.py                   JobService: submissão (outbox), cancel, retry, describe, status do Case
     worker.py                    JobRunner (claim, lock, tentativa, handlers) + run_worker (RQ SimpleWorker)
@@ -287,7 +295,7 @@ osintizada/
 | 57 | Export | IMPLEMENTADO | JSON/CSV/HTML como job; GraphML pendente |
 | 58 | Histórico de buscas | IMPLEMENTADO | `search_executions` |
 | 62 | Observabilidade | IMPLEMENTADO | logs com case_id/job_id/provider, `/metrics`, `/health`, SSE |
-| 63 | Testes | IMPLEMENTADO | 426 testes, rede e Redis simulados; jobs também em PostgreSQL |
+| 63 | Testes | IMPLEMENTADO | 467 testes, rede e Redis simulados; jobs também em PostgreSQL |
 | 68–70 | RAW / multi-input / seeds | IMPLEMENTADO | — |
 | 76 | "Como chegamos aqui?" | IMPLEMENTADO | `GET /cases/{id}/entities/{entity_id}` |
 | 78 | Controle humano | IMPLEMENTADO | bloqueio de valores/providers, limites, cancelamento e retry via API |
@@ -360,3 +368,21 @@ Versões apenas redimensionadas ficam em `osintizada/assets/`.
 | Variáveis `OSINTIZADA_*` e `config/osintizada.yaml` | aceitos como legado; `RINO_*` e `config/rino.yaml` têm precedência |
 | `format_aliases: ["osintizada.case"]` no export JSON | exports anteriores têm a mesma estrutura |
 | Nomes de logger `osintizada.*` | filtros de log existentes |
+
+## 12. Camada de IA auxiliar
+
+```
+RINO CORE ──(jobs AI_ANALYSIS)──► AIService ──► AIRouter ── PrivacyGate · cache · breaker · retry
+                                                   ├── LLAMA LOCAL (Ollama / OpenAI-compatível)
+                                                   ├── CLAUDE
+                                                   └── OPENAI
+```
+
+* A seta é única: o Core não chama a IA durante a coleta, nem depende dela. As análises são Jobs sob demanda.
+* A saída de IA é sempre DERIVED: vai para `ai_annotations` (com provider, modelo, prompt versionado, ids de
+  evidência de entrada, `output_hash`, uso). A única escrita no grafo é a extração: entidades DERIVED ligadas à
+  evidência ORIGINAL por `DERIVED_FROM`, marcadas `AI_SUGGESTED`, com confiança baixa. Elas ficam fora da
+  correlação e dos pivôs até a revisão humana (`_pending_ai_suggestion`).
+* A confiança declarada pelo modelo (`ai_confidence`) é separada da confiança de entidade/correlação.
+* Modos, privacidade, tarefas e solução de problemas: [AI.md](AI.md).
+

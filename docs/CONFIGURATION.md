@@ -76,6 +76,23 @@ images:
   generic_reuse_threshold: 3    # mesma imagem em ≥ N contas do Case → LOW_IDENTITY_VALUE
   known_generic_sha256: []      # avatares padrão conhecidos
 
+ai:                              # IA auxiliar — detalhes em docs/AI.md
+  mode: LOCAL_ONLY              # LOCAL_ONLY | HYBRID | CLOUD (Case pode só restringir)
+  cloud_provider: claude        # claude | openai
+  routing: {classify: local, extract: local, summarize: local, translate: local,
+            query_generation: local, relevance: local, complex_analysis: cloud, final_report: cloud}
+  allow_cloud_fallback: false
+  profiles: {fast: null, balanced: null, quality: null}   # modelos locais definidos por você
+  cache_ttl_seconds: 604800
+  retries: 1                    # só transitórios (timeout, conexão, 5xx, 429)
+  privacy:
+    never_send_to_cloud: [restricted_sources, credentials, raw_auth_tokens, local_files_marked_private]
+    restricted_sources: []
+  llama: {enabled: false, runtime: ollama, base_url: "http://127.0.0.1:11434", model: null,
+          timeout_seconds: 180, max_input_chars: 16000, max_batch_items: 20}
+  claude: {model: claude-opus-5-5, effort: medium}
+  openai: {model: null}
+
 providers:
   <nome.do.provider>:
     enabled: true
@@ -154,6 +171,13 @@ correlation:
 | `DATABASE_URL` | conexão do banco |
 | `REDIS_CACHE_URL` | opcional: Redis/DB só para o cache (ex.: `maxmemory-policy allkeys-lru`); ausente → `REDIS_URL` |
 | `REDIS_URL` | Redis (fila, locks, cache, heartbeats). `rediss://:senha@host:6380/0` para TLS. Sem ela: jobs ficam `PENDING` (`QUEUE_UNAVAILABLE`) e `rino worker` se recusa a iniciar |
+| `RINO_AI_MODE` | `LOCAL_ONLY` (padrão) · `HYBRID` · `CLOUD` |
+| `RINO_AI_LLAMA_ENABLED`, `RINO_AI_LLAMA_BASE_URL`, `RINO_AI_LLAMA_MODEL`, `RINO_AI_LLAMA_RUNTIME` | Llama local (Ollama ou OpenAI-compatível); o RINO não baixa modelos |
+| `RINO_AI_PROFILE` | perfil `fast`/`balanced`/`quality` → modelo definido em `ai.profiles` |
+| `RINO_AI_LOCAL_TIMEOUT`, `RINO_AI_CLOUD_TIMEOUT` | timeouts de IA local e de nuvem (s) |
+| `RINO_AI_ALLOW_CLOUD_FALLBACK`, `RINO_AI_CLOUD_PROVIDER` | fallback local→nuvem no HYBRID; provider de nuvem preferencial |
+| `ANTHROPIC_API_KEY`, `RINO_AI_CLAUDE_MODEL` | Claude (requer `pip install -e ".[ai-cloud]"`) |
+| `OPENAI_API_KEY`, `RINO_AI_OPENAI_MODEL`, `RINO_AI_OPENAI_BASE_URL` | OpenAI (modelo obrigatório) |
 | `RINO_EXECUTOR` | quem executa os Jobs: `auto` (Redis se `REDIS_URL` configurada, senão o próprio servidor), `redis` ou `embedded` |
 | `RINO_AUTO_MIGRATE` | `1` (padrão) aplica migrações na subida; `0` exige banco já migrado (falha com mensagem clara) |
 | `RINO_TEST_DATABASE_URL` | só testes: roda `tests/test_jobs.py` contra PostgreSQL real (schema recriado) |

@@ -88,6 +88,28 @@ class ExportCreate(BaseModel):
     format: str = Field(default="json", description="json | csv | html")
 
 
+class AIAnalyze(BaseModel):
+    operation: str = Field(description="summary | pivots | extract | relevance | classify | translate")
+    params: dict[str, Any] = Field(default_factory=dict, description="labels, target_language, evidence_ids, max_queries")
+
+
+class AIReview(BaseModel):
+    accepted: bool
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class CaseAIMode(BaseModel):
+    ai_mode: str | None = Field(default=None, description="LOCAL_ONLY | HYBRID | CLOUD (null = padrão global)")
+
+
+class AITextTask(BaseModel):
+    task: str = Field(description="CLASSIFY | TRANSLATE | EXTRACT_ENTITIES")
+    text: str = Field(min_length=1, max_length=20_000)
+    labels: list[str] | None = Field(default=None, max_length=50)
+    target_language: str = Field(default="pt", max_length=10)
+    provider: str | None = Field(default=None, description="preferência (respeita o modo de privacidade)")
+
+
 class EntityFlags(BaseModel):
     low_identity_value: bool
     reason: str = Field(default="marcada pelo investigador", max_length=500)
@@ -132,7 +154,7 @@ def build_default_services() -> tuple[InvestigationService, JobService, Any]:
 
 def create_app(service: InvestigationService | None = None, jobs: JobService | None = None,
                redis: Any = None, reconcile_on_startup: bool = True,
-               embedded_executor: bool = True) -> FastAPI:
+               embedded_executor: bool = True, ai_router: Any = None) -> FastAPI:
     if service is None:
         service, jobs, redis = build_default_services()
     if jobs is None:
@@ -154,6 +176,8 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
     executor = None
     if embedded_executor and isinstance(jobs.queue, DatabaseJobQueue):
         executor = build_embedded_executor(service, jobs)
+        # Router explícito (testes) é compartilhado; em produção o executor cria o seu, no loop dele.
+        executor.ctx.ai_router = ai_router
     app.state.executor = executor
 
     def worker_info() -> dict:
@@ -242,7 +266,7 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
     # --- saúde / métricas ----------------------------------------------------------------------
 
     @app.get("/health")
-    def health() -> dict:
+    async def health() -> dict:
         database = database_status(db)
         redis_info = redis_status(redis)
         worker = worker_info()
@@ -259,7 +283,21 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
               and (embedded or redis_info["status"] == "ok"))
         return {"status": "ok" if ok else "degraded", "product": PRODUCT_NAME,
                 "api": {"status": "ok", "name": f"{PRODUCT_NAME} API", "version": __version__},
-                "database": database, "redis": redis_info, "worker": worker, "queue": queue, "jobs": job_counts}
+                "database": database, "redis": redis_info, "worker": worker, "queue": queue, "jobs": job_counts,
+                "ai": await ai_health()}
+
+    async def ai_health() -> dict:
+        """IA é auxiliar: não entra no status geral (o Core funciona sem ela). Sem chaves na resposta."""
+        try:
+            st = await get_ai_router().status()
+        except Exception as exc:  # noqa: BLE001 - configuração de IA inválida não derruba o health
+            return {"status": "ERROR", "error": str(exc)[:200]}
+        out: dict[str, Any] = {"mode": st["mode"], "status": st["status"], "active_provider": st["active_provider"]}
+        for p in st["providers"]:
+            out[p["provider"].removeprefix("ai.")] = {"enabled": p["enabled"], "reachable": p["reachable"],
+                                                     "model": p["model"], "status": p["status"],
+                                                     "message": p["message"], "missing": p["missing"]}
+        return out
 
     @app.get("/metrics", dependencies=auth)
     def prometheus_metrics() -> PlainTextResponse:
@@ -338,6 +376,96 @@ def create_app(service: InvestigationService | None = None, jobs: JobService | N
                 "status": job["status"], "warnings": warnings}
 
     # --- jobs -------------------------------------------------------------------------------------
+
+    # --- IA (interpretação DERIVED, nunca evidência) ----------------------------------------------
+
+    def get_ai_router():
+        nonlocal ai_router
+        if ai_router is None:
+            from osintizada.ai.router import build_ai_router
+
+            ai_router = build_ai_router(settings, cache=getattr(service.orchestrator.runtime, "cache", None))
+        return ai_router
+
+    @app.get("/ai/status", dependencies=auth)
+    async def ai_status() -> dict:
+        """Modo de privacidade, rotas e estado de cada provider. Nunca expõe chaves."""
+        return await get_ai_router().status()
+
+    @app.get("/ai/providers", dependencies=auth)
+    async def ai_providers() -> list[dict]:
+        return (await get_ai_router().status())["providers"]
+
+    @app.post("/cases/{case_id}/ai/analyze", status_code=202, dependencies=auth)
+    def ai_analyze(case_id: str, body: AIAnalyze) -> dict:
+        """Enfileira uma análise de IA (Job): summary | pivots | extract | relevance | classify | translate."""
+        try:
+            job = jobs.submit_ai(case_id, body.operation, body.params)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _submission(job)
+
+    @app.get("/cases/{case_id}/ai", dependencies=auth)
+    def list_ai_analyses(case_id: str, operation: str | None = None) -> list[dict]:
+        from osintizada.repositories import AIAnnotationRepository
+
+        with db.session() as s:
+            get_case_or_404(s, case_id)
+            return [row_to_dict(a) for a in AIAnnotationRepository(s).list(case_id, operation)]
+
+    @app.post("/cases/{case_id}/ai/{annotation_id}/review", dependencies=auth)
+    def review_ai_analysis(case_id: str, annotation_id: str, body: AIReview) -> dict:
+        from osintizada.ai.service import AIService
+
+        try:
+            return AIService(db, get_ai_router()).review_annotation(case_id, annotation_id, body.accepted, body.notes)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/cases/{case_id}/entities/{entity_id}/ai-review", dependencies=auth)
+    def review_ai_entity(case_id: str, entity_id: str, body: AIReview) -> dict:
+        """AI_REVIEWED: aceita/rejeita uma entidade DERIVED sugerida por IA."""
+        from osintizada.ai.service import AIService
+
+        try:
+            return AIService(db, get_ai_router()).review_entity(case_id, entity_id, body.accepted, body.notes)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/cases/{case_id}/ai-mode", dependencies=auth)
+    def set_case_ai_mode(case_id: str, body: CaseAIMode) -> dict:
+        """Modo de IA do Case. Só RESTRINGE o global (ex.: investigação sensível → LOCAL_ONLY)."""
+        from osintizada.ai.models import AIMode
+
+        mode = body.ai_mode.upper() if body.ai_mode else None
+        if mode is not None and mode not in AIMode.__members__:
+            raise HTTPException(status_code=422, detail="ai_mode deve ser LOCAL_ONLY, HYBRID ou CLOUD")
+        with db.session() as s:
+            case = get_case_or_404(s, case_id)
+            meta = dict(case.meta or {})
+            if mode:
+                meta["ai_mode"] = mode
+            else:
+                meta.pop("ai_mode", None)
+            case.meta = meta
+            AuditRepository(s).log(case_id, AuditEvent.CASE_UPDATED, "API", f"ai_mode do Case: {mode or 'padrão'}", {})
+            return row_to_dict(case)
+
+    @app.post("/ai/tasks", dependencies=auth)
+    async def ai_text_task(body: AITextTask) -> dict:
+        """Tarefa avulsa sobre um texto curto (classificar, traduzir, extrair). Não é persistida."""
+        from osintizada.ai.service import AIService
+
+        task = {"CLASSIFY": "CLASSIFY_CONTENT"}.get(body.task.upper(), body.task.upper())
+        try:
+            return await AIService(db, get_ai_router()).run_text_task(
+                task, body.text, labels=body.labels, target_language=body.target_language, preferred=body.provider)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/jobs/{job_id}", dependencies=auth)
     def get_job(job_id: str) -> dict:

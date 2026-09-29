@@ -20,6 +20,15 @@ x-app-env: &app-env
   TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
   TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
   TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
+  # IA auxiliar (opcional; docs/AI.md). Ollama roda FORA do compose (no host) — o RINO não baixa modelos.
+  RINO_AI_MODE: ${RINO_AI_MODE:-LOCAL_ONLY}
+  RINO_AI_LLAMA_ENABLED: ${RINO_AI_LLAMA_ENABLED:-false}
+  RINO_AI_LLAMA_BASE_URL: ${RINO_AI_LLAMA_BASE_URL:-http://host.docker.internal:11434}
+  RINO_AI_LLAMA_MODEL: ${RINO_AI_LLAMA_MODEL:-}
+  RINO_AI_ALLOW_CLOUD_FALLBACK: ${RINO_AI_ALLOW_CLOUD_FALLBACK:-false}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  RINO_AI_OPENAI_MODEL: ${RINO_AI_OPENAI_MODEL:-}
 
 services:
   postgres:
@@ -60,6 +69,7 @@ services:
       <<: *app-env
       RINO_API_TOKEN: ${RINO_API_TOKEN:?defina RINO_API_TOKEN no .env}
     command: ["rino", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    extra_hosts: ["host.docker.internal:host-gateway"]   # alcançar o Ollama do host
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -79,6 +89,7 @@ services:
     image: rino:latest
     environment: *app-env
     command: ["rino", "worker"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - appdata:/app/data     # exports/artefatos compartilhados com a API
     depends_on:

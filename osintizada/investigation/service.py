@@ -70,6 +70,12 @@ COMPONENT = "InvestigationService"
 _NOT_CALLED = {ProviderStatus.SKIPPED, ProviderStatus.NOT_CONFIGURED, ProviderStatus.CANCELLED}
 
 
+
+def _pending_ai_suggestion(meta: dict | None) -> bool:
+    """Entidade sugerida por IA e não aceita (pendente ou rejeitada) — fora da correlação e dos pivôs."""
+    ai = (meta or {}).get("ai") or {}
+    return bool(ai.get("suggested")) and ai.get("review") != "ACCEPTED"
+
 class InputSpec(BaseModel):
     value: str = Field(min_length=1, max_length=2048)
     type: IdentifierType | None = None  # seleção manual do tipo (opcional)
@@ -640,11 +646,15 @@ class InvestigationService:
     def _finalize_analysis(self, case_id: str) -> tuple[int, int]:
         with self.db.session() as s:
             repos = _Repos(s)
-            rows = repos.entities.list(case_id)
+            # Sugestões de IA ainda não aceitas por um humano não entram na correlação: a confiança
+            # declarada por um modelo nunca alimenta confirmação de identidade.
+            rows = [r for r in repos.entities.list(case_id) if not _pending_ai_suggestion(r.meta)]
+            usable = {r.id for r in rows}
             snapshots = [EntitySnapshot(r.id, EntityType(r.type), r.canonical_value, r.display_value, r.depth,
                                         r.confidence, r.origin, r.fingerprint) for r in rows]
             rels = [RelationView(r.id, r.source_entity_id, r.target_entity_id, r.relationship_type,
-                                 repos.relationships.evidence_ids(r.id)) for r in repos.relationships.list(case_id)]
+                                 repos.relationships.evidence_ids(r.id)) for r in repos.relationships.list(case_id)
+                    if r.source_entity_id in usable and r.target_entity_id in usable]
             attributes = {r.id: (r.meta or {}).get("attributes", {}) for r in rows}
             entity_evidence: dict[str, list[str]] = {}
             for ev in repos.evidence.list(case_id):

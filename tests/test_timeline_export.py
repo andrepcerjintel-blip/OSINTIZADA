@@ -83,7 +83,7 @@ async def test_csv_export_is_split_by_type(case):
     data = ExportService(db, settings).to_csv_zip(ExportService(db, settings).bundle(case_id))
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         assert set(zf.namelist()) == {"entities.csv", "evidence.csv", "relationships.csv", "timeline.csv",
-                                      "searches.csv", "seeds.csv"}
+                                      "searches.csv", "seeds.csv", "ai_annotations.csv"}
         rows = list(csv.DictReader(io.StringIO(zf.read("relationships.csv").decode())))
     assert rows and json.loads(rows[0]["evidence_ids"])
 

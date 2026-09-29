@@ -74,6 +74,16 @@ tr:hover td{background:#1b232d}
 .msg{padding:10px;border-radius:8px;background:#3a1a1a;color:#ffd0d0;margin-top:10px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
 footer{text-align:center;color:var(--steel);font-size:12px;padding:10px 0 24px}
+.ai-panel{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+.ai-panel h3{margin:0 0 8px;font-size:14px}
+.ai-panel h3 small{color:var(--muted);font-weight:400}
+.ai-panel button{padding:6px 10px;font-size:13px}
+.ai-card{background:var(--graphite);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:10px}
+.ai-card .meta{color:var(--muted);font-size:12px;margin-bottom:6px}
+.ai-card ul{margin:6px 0 0;padding-left:18px}
+.ai-card li{margin:3px 0}
+.ai-card .mini{padding:2px 8px;font-size:12px;margin-left:6px}
+.ai-card code{background:var(--ink);padding:1px 5px;border-radius:4px}
 footer a{margin:0 8px}
 </style></head>
 <body>
@@ -84,6 +94,7 @@ footer a{margin:0 8px}
     <span class="pill"><i>API</i><span id="s-api">…</span></span>
     <span class="pill"><i>Banco</i><span id="s-database">…</span></span>
     <span class="pill"><i>Executor</i><span id="s-worker">…</span></span>
+    <span class="pill" title="IA auxiliar: interpreta evidências, não as produz"><i>AI</i><span id="s-ai">…</span></span>
   </div>
 </header>
 
@@ -149,6 +160,19 @@ footer a{margin:0 8px}
         <tbody id="rows"></tbody></table></div>
       <div class="hint" id="res-hint"></div>
       <div class="msg hidden" id="export-msg"></div>
+      <div class="ai-panel">
+        <h3>Análise por IA <small>— interpretação (DERIVED), não evidência; nada é executado sem você</small></h3>
+        <div class="actions">
+          <button class="ghost" data-ai="summary">Resumo</button>
+          <button class="ghost" data-ai="relevance">Triagem</button>
+          <button class="ghost" data-ai="extract">Extrair entidades</button>
+          <button class="ghost" data-ai="pivots">Sugerir consultas</button>
+          <button class="ghost" data-ai="translate">Traduzir</button>
+          <button class="ghost" data-ai="classify">Classificar</button>
+        </div>
+        <div class="hint" id="ai-msg"></div>
+        <div id="ai-results"></div>
+      </div>
     </section>
   </section>
 </main>
@@ -164,6 +188,11 @@ const JOB = {PENDING:"pendente", QUEUED:"na fila", RUNNING:"executando", RETRYIN
   COMPLETED:"concluída", FAILED:"falhou", CANCELLED:"cancelada", INTERRUPTED:"interrompida",
   OPEN:"aberta", ARCHIVED:"arquivada"};
 const ORIGIN = {SEED:"alvo informado", DISCOVERED:"descoberta", DERIVED:"derivada", PIVOT:"pivô"};
+function originLabel(e){
+  const ai = (e.metadata || {}).ai;
+  if (ai && ai.suggested) return "sugerida por IA" + (ai.review === "ACCEPTED" ? " (aceita)" : ai.review === "REJECTED" ? " (rejeitada)" : " (pendente)");
+  return ORIGIN[e.origin] || e.origin;
+}
 let state = {caseId:null, jobId:null, timer:null, entities:[]};
 
 function token(){ try { return sessionStorage.getItem("rino_token") || ""; } catch(e){ return ""; } }
@@ -197,6 +226,11 @@ async function health(){
       e.title = v; e.className = (v === "ok" || v === "ONLINE") ? "ok" : (v === "STALE" ? "warn" : "bad"); };
     set("s-api", h.api.status); set("s-database", h.database.status);
     set("s-worker", h.worker.status, h.worker.mode === "EMBEDDED" ? " (no servidor)" : "");
+    const ai = h.ai || {}; const el = $("s-ai");
+    const modeLabel = {LOCAL_ONLY:"LOCAL", HYBRID:"HYBRID", CLOUD:"CLOUD"}[ai.mode] || "—";
+    el.textContent = modeLabel + (ai.active_provider ? " · " + ai.active_provider.replace("ai.", "") : " · indisponível");
+    el.className = ai.active_provider ? "ok" : "warn";
+    el.title = ai.active_provider ? "provider ativo: " + ai.active_provider : "nenhum provider de IA disponível (o RINO funciona sem IA)";
   } catch(e){ $("s-api").textContent = "indisponível"; $("s-api").className = "bad"; }
 }
 
@@ -279,7 +313,7 @@ async function openCase(caseId, name){
     const types = [...new Set(state.entities.map(e => e.type))].sort();
     const sel = $("f-type"); sel.replaceChildren(new Option("Todos (" + state.entities.length + ")", ""));
     for (const t of types) sel.append(new Option(t + " (" + state.entities.filter(e => e.type === t).length + ")", t));
-    render(); $("results-card").classList.remove("hidden"); hide($("export-msg"));
+    render(); $("results-card").classList.remove("hidden"); hide($("export-msg")); loadAI();
   } catch(e){ show($("form-msg"), e.message); }
 }
 function render(){
@@ -289,7 +323,7 @@ function render(){
   const tb = $("rows"); tb.replaceChildren();
   for (const e of rows.slice(0, 1000)){
     const tr = document.createElement("tr");
-    const cells = [e.type, e.display_value || e.canonical_value, ORIGIN[e.origin] || e.origin, e.depth,
+    const cells = [e.type, e.display_value || e.canonical_value, originLabel(e), e.depth,
                    Math.round((e.confidence || 0) * 100) + "%", e.evidence_count ?? ""];
     cells.forEach((v, i) => { const td = document.createElement("td"); td.textContent = v; if (i === 1) td.className = "val"; tr.append(td); });
     tb.append(tr);
@@ -322,6 +356,85 @@ document.querySelectorAll("[data-export]").forEach(b => b.addEventListener("clic
   } catch(e){ if (tab) tab.close(); show(msg, e.message); }
 }));
 
+
+// --- IA: análises (Jobs) e revisão humana ------------------------------------------------------------
+const AI_OPS = {summary:"Resumo", relevance:"Triagem", extract:"Extração", pivots:"Consultas sugeridas",
+  translate:"Tradução", classify:"Classificação"};
+function el(tag, text, cls){ const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+async function aiRun(op){
+  const msg = $("ai-msg"); msg.textContent = AI_OPS[op] + ": na fila…";
+  try {
+    const j = await (await api("/cases/" + state.caseId + "/ai/analyze", {method:"POST", body:JSON.stringify({operation:op})})).json();
+    for (let i = 0; i < 900; i++){
+      const s = await (await api("/jobs/" + j.job_id)).json();
+      if (["COMPLETED","FAILED","CANCELLED"].includes(s.status)){ msg.textContent = ""; break; }
+      msg.textContent = AI_OPS[op] + ": " + (JOB[s.status] || s.status) + "…";
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    await loadAI(); openCase(state.caseId, $("res-title").textContent.replace("Resultados — ", ""));
+  } catch(e){ msg.textContent = e.message; }
+}
+document.querySelectorAll("[data-ai]").forEach(b => b.addEventListener("click", () => aiRun(b.dataset.ai)));
+async function review(entityId, accepted){
+  try { await api("/cases/" + state.caseId + "/entities/" + entityId + "/ai-review", {method:"POST", body:JSON.stringify({accepted})}); await loadAI(); }
+  catch(e){ $("ai-msg").textContent = e.message; }
+}
+async function investigateQuery(q){
+  try {
+    const j = await (await api("/cases/" + state.caseId + "/investigate", {method:"POST", body:JSON.stringify({inputs:[q], mode:"quick"})})).json();
+    watch(j.job_id, $("res-title").textContent.replace("Resultados — ", ""));
+  } catch(e){ $("ai-msg").textContent = e.message; }
+}
+async function loadAI(){
+  const box = $("ai-results"); box.replaceChildren();
+  let anns = [];
+  try { anns = await (await api("/cases/" + state.caseId + "/ai")).json(); } catch(e){ return; }
+  const latest = {};
+  for (const a of anns) if (!latest[a.operation]) latest[a.operation] = a;
+  for (const a of Object.values(latest)){
+    const card = el("div", undefined, "ai-card");
+    const when = new Date(a.created_at + (a.created_at.endsWith("Z") ? "" : "Z")).toLocaleString("pt-BR");
+    card.append(el("b", AI_OPS[a.operation] || a.operation));
+    card.append(el("div", [a.status, a.provider ? (a.provider.replace("ai.", "") + " / " + a.model) : "", a.mode, when]
+      .filter(Boolean).join(" · "), "meta"));
+    const o = a.output || {};
+    if (!["OK","PARTIAL"].includes(a.status)){ card.append(el("div", a.reason || a.status)); box.append(card); continue; }
+    if (a.operation === "summary"){
+      card.append(el("div", o.summary)); const ul = el("ul");
+      (o.key_points || []).forEach(p => ul.append(el("li", p))); card.append(ul);
+      card.append(el("div", "Evidências citadas: " + (o.cited_ids || []).length, "meta"));
+    } else if (a.operation === "relevance"){
+      const st = o.stages || {};
+      card.append(el("div", "Entrada " + st.input + " → filtros " + st.after_deterministic_filters + " → avaliadas " + st.assessed + " → alto interesse " + st.high_interest, "meta"));
+      const ul = el("ul"); (o.items || []).slice(0, 10).forEach(i => ul.append(el("li", i.score.toFixed(2) + " — " + i.reason))); card.append(ul);
+    } else if (a.operation === "extract"){
+      const ul = el("ul");
+      for (const c of (o.candidates || [])){
+        const li = el("li", c.type + ": " + c.value + " (IA " + (c.ai_confidence ?? "?") + ")" + (c.already_known ? " — já conhecida" : ""));
+        if (c.entity_id && !c.already_known){
+          const ok = el("button", "Aceitar", "ghost mini"); ok.onclick = () => review(c.entity_id, true);
+          const no = el("button", "Rejeitar", "ghost mini"); no.onclick = () => review(c.entity_id, false);
+          li.append(ok, no);
+        }
+        ul.append(li);
+      }
+      card.append(ul); card.append(el("div", (o.discarded || []).length + " descartada(s) pela validação", "meta"));
+    } else if (a.operation === "pivots"){
+      const ul = el("ul");
+      for (const q of (o.queries || [])){
+        const li = el("li"); li.append(el("code", q.query), document.createTextNode(" — " + q.reason + (q.already_executed ? " (já consultada)" : "")));
+        if (!q.already_executed){ const b = el("button", "Investigar", "ghost mini"); b.onclick = () => investigateQuery(q.query); li.append(b); }
+        ul.append(li);
+      }
+      card.append(ul);
+    } else if (a.operation === "translate"){
+      const ul = el("ul"); (o.items || []).slice(0, 8).forEach(i => ul.append(el("li", "[" + i.source_language + "] " + i.translation))); card.append(ul);
+    } else if (a.operation === "classify"){
+      card.append(el("div", Object.entries(o.counts || {}).map(([k, v]) => k + ": " + v).join(" · ")));
+    }
+    box.append(card);
+  }
+}
 try { $("token").value = token(); } catch(_){}
 health(); setInterval(health, 10000); loadCases();
 </script>

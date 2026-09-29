@@ -87,6 +87,16 @@ class JobService:
             raise ValueError(f"Formato não suportado: {fmt} (use {', '.join(EXPORT_FORMATS)})")
         return self._submit(case_id, JobType.EXPORT, {"format": fmt})
 
+    def submit_ai(self, case_id: str, operation: str, params: dict | None = None) -> dict:
+        """Análise de IA sobre o Case, como Job (não bloqueia a API). A IA interpreta; o Core decide."""
+        from osintizada.ai.service import OPERATIONS
+
+        if operation not in OPERATIONS:
+            raise ValueError(f"Operação de IA desconhecida: {operation} (use {', '.join(OPERATIONS)})")
+        allowed = {"labels", "target_language", "evidence_ids", "max_queries"}
+        params = {k: v for k, v in (params or {}).items() if k in allowed}
+        return self._submit(case_id, JobType.AI_ANALYSIS, {"operation": operation, "params": params})
+
     def _submit(self, case_id: str, job_type: JobType, request: dict) -> dict:
         with self.db.session() as s:
             case = CaseRepository(s).get(case_id)

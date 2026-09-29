@@ -143,3 +143,41 @@ correlation:
   # weights: {same_telegram_id: 60, same_phone: 50, same_email: 45, same_username_rare: 25,
   #           same_exact_avatar: 20, very_similar_avatar: 12, similar_avatar: 6, ...}
   low_identity_avatar_factor: 0.25   # avatar genérico vale 25% do peso; avatar sozinho nunca gera SAME_AS
+
+# IA auxiliar (interpreta evidência; nunca a produz). Desligada, o RINO funciona igual.
+# Detalhes: docs/AI.md. Variáveis RINO_AI_* têm precedência.
+ai:
+  mode: LOCAL_ONLY              # LOCAL_ONLY | HYBRID | CLOUD (um Case pode só restringir: ai_mode)
+  local_provider: llama
+  cloud_provider: claude        # claude | openai
+  routing:                      # tarefa → local | cloud (usado no modo HYBRID)
+    classify: local
+    extract: local
+    summarize: local
+    translate: local
+    query_generation: local
+    relevance: local
+    complex_analysis: cloud
+    final_report: cloud
+  allow_cloud_fallback: false   # HYBRID: se o local falhar, pode ir à nuvem?
+  profiles: {fast: null, balanced: null, quality: null}   # nomes de modelos locais escolhidos por você
+  profile: null
+  cache_ttl_seconds: 604800
+  retries: 1                    # só erros transitórios
+  privacy:
+    never_send_to_cloud: [restricted_sources, credentials, raw_auth_tokens, local_files_marked_private]
+    restricted_sources: []      # ex.: [social.telegram]
+  llama:
+    enabled: false              # RINO_AI_LLAMA_ENABLED=true
+    runtime: ollama             # ollama | openai (llama.cpp / LM Studio / vLLM)
+    base_url: http://127.0.0.1:11434
+    model: null                 # RINO_AI_LLAMA_MODEL=<modelo instalado por você>
+    timeout_seconds: 180        # RINO_AI_LOCAL_TIMEOUT
+    max_input_chars: 16000
+    max_batch_items: 20
+  claude:
+    model: claude-opus-5-5      # chave: ANTHROPIC_API_KEY (só no .env)
+    effort: medium
+  openai:
+    model: null                 # chave: OPENAI_API_KEY; modelo: RINO_AI_OPENAI_MODEL
+
